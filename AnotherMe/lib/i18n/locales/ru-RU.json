@@ -3,7 +3,10 @@
     "you": "Вы",
     "confirm": "Подтвердить",
     "cancel": "Отмена",
-    "loading": "Загрузка..."
+    "loading": "Загрузка...",
+    "close": "Закрыть",
+    "copy": "Копировать",
+    "copied": "Скопировано"
   },
   "home": {
     "slogan": "Generative Learning in Multi-Agent Interactive Classroom",
@@ -69,6 +72,28 @@
       "qa": "Вопросы",
       "discussion": "ДИСКУС",
       "lecture": "ЛЕКЦ"
+    },
+    "regenerate": "Перегенерировать",
+    "trace": {
+      "title": "Трассировка инструментов",
+      "thought": "Мысли",
+      "tool": "Вызов инструмента",
+      "observe": "Наблюдение",
+      "executing": "Выполняется",
+      "waiting": "Ожидание",
+      "executionFailed": "Ошибка выполнения"
+    },
+    "visualization": {
+      "chartError": "Не удалось загрузить график",
+      "svgError": "Не удалось загрузить SVG",
+      "mermaidError": "Не удалось загрузить диаграмму Mermaid",
+      "fullscreen": "Полный экран",
+      "showCode": "Показать код",
+      "hideCode": "Скрыть код",
+      "copyCode": "Копировать код",
+      "copied": "Скопировано",
+      "close": "Закрыть",
+      "review": "Обзор"
     }
   },
   "actions": {

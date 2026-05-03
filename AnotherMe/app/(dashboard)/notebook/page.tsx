@@ -14,6 +14,9 @@ import {
   Save,
   Sun,
   Trash2,
+  Clock,
+  Tag,
+  FileX,
 } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import html2canvas from 'html2canvas';
@@ -29,6 +32,7 @@ import {
   upsertNotebookNote,
 } from '@/lib/notebook/storage';
 import { cn } from '@/lib/utils';
+import { recordLearningEvent } from '@/lib/learning-events/client';
 
 interface NoteDraft {
   title: string;
@@ -116,6 +120,47 @@ function toDraft(note: NotebookNote): NoteDraft {
     tags: note.tags.join(', '),
     content: note.content,
   };
+}
+
+function formatRelativeTime(timestamp: number): string {
+  const now = Date.now();
+  const diff = now - timestamp;
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes}分钟前`;
+  if (hours < 24) return `${hours}小时前`;
+  if (days < 7) return `${days}天前`;
+  return new Date(timestamp).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+}
+
+function getNotePreview(content: string, maxLength = 60): string {
+  const plain = content
+    .replace(/!\[.*?\]\(.*?\)/g, '[图片]')
+    .replace(/\[.*?\]\(.*?\)/g, '$1')
+    .replace(/[#*`~>-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!plain) return '无内容';
+  return plain.length > maxLength ? `${plain.slice(0, maxLength)}…` : plain;
+}
+
+function getSubjectColor(subject: string): string {
+  const colors: Record<string, string> = {
+    '数学': 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+    '物理': 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+    '化学': 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+    '英语': 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+    '语文': 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',
+    '历史': 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300',
+    '地理': 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300',
+    '生物': 'bg-lime-100 text-lime-700 dark:bg-lime-900/40 dark:text-lime-300',
+    '课堂': 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
+    '综合': 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+  };
+  return colors[subject] || colors['综合'];
 }
 
 function splitTags(raw: string): string[] {
@@ -247,7 +292,6 @@ export default function DashboardNotebookPage() {
   const [draft, setDraft] = useState<NoteDraft>(EMPTY_DRAFT);
   const [search, setSearch] = useState('');
   const [themeId, setThemeId] = useState<ThemeOption['id']>('paper');
-  const [showToc, setShowToc] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
   const [statusText, setStatusText] = useState('本地模式 · 自动保存已开启');
   const [editingIndex, setEditingIndex] = useState(0);
@@ -407,6 +451,17 @@ export default function DashboardNotebookPage() {
       subject: '综合',
       tags: ['草稿'],
       source: 'manual',
+    });
+    void recordLearningEvent({
+      eventType: 'notebook_saved',
+      knowledgePoints: ['未命名文稿'],
+      payload: {
+        subject: '综合',
+        title: created.title,
+        note_id: created.id,
+        source: created.source,
+      },
+      weight: 0.4,
     });
     refreshFromStorage(created.id);
     setStatusText('已创建新文稿');
@@ -600,6 +655,21 @@ export default function DashboardNotebookPage() {
       stageId: selectedNote?.stageId,
       sceneId: selectedNote?.sceneId,
     });
+    void recordLearningEvent({
+      eventType: 'notebook_saved',
+      classroomId: saved.stageId,
+      sceneId: saved.sceneId,
+      knowledgePoints: [saved.title || draft.subject || '笔记复盘'],
+      payload: {
+        subject: saved.subject || draft.subject || '综合',
+        title: saved.title,
+        note_id: saved.id,
+        source: saved.source,
+        tags: saved.tags || [],
+        content_length: saved.content.length,
+      },
+      weight: Math.min(2, Math.max(0.5, saved.content.length / 1000)),
+    });
     refreshFromStorage(saved.id);
     setStatusText('已手动保存');
   };
@@ -709,106 +779,210 @@ export default function DashboardNotebookPage() {
       <div
         className={cn(
           'mx-auto grid min-h-[calc(100vh-4rem)] w-full max-w-[1440px]',
-          focusMode ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-[220px_1fr]',
+          focusMode ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-[260px_1fr_200px]',
         )}
       >
         {!focusMode && (
-          <aside className={cn('border-r px-5 py-8', asideBgClass)}>
-            <div className="mb-4 flex items-center gap-2 text-xs uppercase tracking-[0.2em]">
-              <FolderTree className="h-3.5 w-3.5" />
-              文稿
+          <aside className={cn('border-r flex flex-col', asideBgClass)}>
+            {/* Sidebar Header */}
+            <div className="px-4 pt-6 pb-3">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs uppercase tracking-[0.15em] font-semibold opacity-80">
+                  <FolderTree className="h-3.5 w-3.5" />
+                  我的笔记
+                  <span className="text-[10px] normal-case tracking-normal opacity-60 font-normal">
+                    ({filteredNotes.length})
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={createNewNote}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors',
+                    theme.id === 'night'
+                      ? 'bg-[#263245] text-[#dce6f6] hover:bg-[#2d3d54]'
+                      : 'bg-[#e1dad0] text-[#3c342b] hover:bg-[#d5cdc1]',
+                  )}
+                >
+                  <Plus className="h-3 w-3" />
+                  新建
+                </button>
+              </div>
+              <div className="relative">
+                <input
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="搜索笔记..."
+                  className={cn(
+                    'h-8 w-full rounded-lg border bg-transparent px-3 text-xs outline-none transition-colors',
+                    theme.id === 'night'
+                      ? 'border-[#3a475b] text-[#d9e3f2] placeholder:text-[#8091ab] focus:border-[#5a7aaa]'
+                      : 'border-[#d8d1c6] text-[#403a33] placeholder:text-[#928776] focus:border-[#a89b8a]',
+                  )}
+                />
+              </div>
             </div>
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="搜索"
-              className={cn(
-                'mb-4 h-8 w-full border-b bg-transparent px-0 text-xs outline-none',
-                theme.id === 'night'
-                  ? 'border-[#3a475b] text-[#d9e3f2] placeholder:text-[#8091ab]'
-                  : 'border-[#cbc1b1] text-[#403a33] placeholder:text-[#928776]',
-              )}
-            />
-            <div className="max-h-[34vh] space-y-0.5 overflow-y-auto">
+
+            {/* Notes List */}
+            <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-1">
               {filteredNotes.length > 0 ? (
                 filteredNotes.map((note) => {
                   const active = note.id === selectedId;
+                  const preview = getNotePreview(note.content);
+                  const timeText = formatRelativeTime(note.updatedAt);
+                  const subjectColor = getSubjectColor(note.subject);
+
                   return (
                     <button
                       key={note.id}
                       type="button"
                       onClick={() => switchNote(note)}
                       className={cn(
-                        'block w-full truncate px-2 py-1.5 text-left text-[12px] transition-colors',
+                        'group w-full text-left rounded-xl border p-3 transition-all duration-200',
                         active
                           ? theme.id === 'night'
-                            ? 'bg-[#263245] text-[#edf3ff]'
-                            : 'bg-[#e1dad0] text-[#1f1c18]'
+                            ? 'bg-[#263245] border-[#3a506e] shadow-sm'
+                            : 'bg-white border-[#c8bdb0] shadow-sm'
                           : theme.id === 'night'
-                            ? 'text-[#b7c5dc] hover:bg-[#232d3c]'
-                            : 'text-[#5b544a] hover:bg-[#e7e2d9]',
+                            ? 'border-transparent hover:bg-[#232d3c] hover:border-[#334156]'
+                            : 'border-transparent hover:bg-[#f5f2ed] hover:border-[#ddd6cb]',
                       )}
                     >
-                      {note.title || '未命名文稿'}
+                      {/* Title Row */}
+                      <div className="flex items-start justify-between gap-2 mb-1.5">
+                        <h3
+                          className={cn(
+                            'text-[13px] font-semibold leading-tight truncate flex-1',
+                            active
+                              ? theme.id === 'night'
+                                ? 'text-[#edf3ff]'
+                                : 'text-[#1f1c18]'
+                              : theme.id === 'night'
+                                ? 'text-[#c8d4e6]'
+                                : 'text-[#3c342b]',
+                          )}
+                        >
+                          {note.title || '未命名文稿'}
+                        </h3>
+                        <span
+                          className={cn(
+                            'shrink-0 inline-flex items-center px-1.5 py-px rounded text-[10px] font-medium',
+                            subjectColor,
+                          )}
+                        >
+                          {note.subject}
+                        </span>
+                      </div>
+
+                      {/* Preview */}
+                      <p
+                        className={cn(
+                          'text-[11px] leading-relaxed truncate mb-2',
+                          theme.id === 'night' ? 'text-[#8ea2c2]' : 'text-[#8a8075]',
+                        )}
+                      >
+                        {preview}
+                      </p>
+
+                      {/* Meta Row */}
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <Clock className="h-3 w-3 opacity-50" />
+                          <span
+                            className={cn(
+                              'text-[10px]',
+                              theme.id === 'night' ? 'text-[#6b7d9a]' : 'text-[#a0988c]',
+                            )}
+                          >
+                            {timeText}
+                          </span>
+                        </div>
+                        {note.tags.length > 0 && (
+                          <div className="flex items-center gap-1">
+                            <Tag className="h-3 w-3 opacity-40" />
+                            <span
+                              className={cn(
+                                'text-[10px] truncate max-w-[80px]',
+                                theme.id === 'night' ? 'text-[#6b7d9a]' : 'text-[#a0988c]',
+                              )}
+                            >
+                              {note.tags.slice(0, 2).join(', ')}
+                              {note.tags.length > 2 && ` +${note.tags.length - 2}`}
+                            </span>
+                          </div>
+                        )}
+                      </div>
                     </button>
                   );
                 })
               ) : (
-                <p className="px-2 py-1 text-[11px] opacity-75">暂无文稿</p>
-              )}
-            </div>
-
-            <div className={cn('mt-8 border-t pt-4', theme.id === 'night' ? 'border-[#334156]' : 'border-[#d2c9ba]')}>
-              <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-[0.2em]">
-                <span className="inline-flex items-center gap-2">
-                  <ListTree className="h-3.5 w-3.5" />
-                  大纲
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setShowToc((prev) => !prev)}
-                  className="text-[10px] normal-case tracking-normal opacity-80"
-                >
-                  {showToc ? '隐藏' : '显示'}
-                </button>
-              </div>
-              {showToc && (
-                <div className="max-h-[34vh] space-y-0.5 overflow-y-auto">
-                  {headings.length > 0 ? (
-                    headings.map((item) => (
-                      <button
-                        key={item.slug}
-                        type="button"
-                        onClick={() => {
-                          const node = document.getElementById(item.slug);
-                          node?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        }}
-                        className={cn(
-                          'block w-full truncate py-1 text-left text-[12px] opacity-90 transition-opacity hover:opacity-100',
-                          theme.id === 'night' ? 'text-[#b8c8de]' : 'text-[#5f584d]',
-                        )}
-                        style={{ paddingLeft: `${(item.level - 1) * 12 + 6}px` }}
-                      >
-                        {item.text}
-                      </button>
-                    ))
-                  ) : (
-                    <p className="px-2 py-1 text-[11px] opacity-75">使用 `#` / `##` 生成目录</p>
-                  )}
+                <div className="flex flex-col items-center justify-center py-10 text-center">
+                  <div
+                    className={cn(
+                      'w-10 h-10 rounded-xl flex items-center justify-center mb-3',
+                      theme.id === 'night'
+                        ? 'bg-[#232d3c] text-[#5a6d85]'
+                        : 'bg-[#e8e4dd] text-[#a0988c]',
+                    )}
+                  >
+                    <FileX className="h-5 w-5" />
+                  </div>
+                  <p
+                    className={cn(
+                      'text-[12px] font-medium mb-1',
+                      theme.id === 'night' ? 'text-[#8ea2c2]' : 'text-[#6b645a]',
+                    )}
+                  >
+                    {search.trim() ? '未找到匹配的笔记' : '暂无笔记'}
+                  </p>
+                  <p
+                    className={cn(
+                      'text-[11px]',
+                      theme.id === 'night' ? 'text-[#5a6d85]' : 'text-[#a0988c]',
+                    )}
+                  >
+                    {search.trim() ? '尝试其他关键词' : '点击上方"新建"创建第一篇笔记'}
+                  </p>
                 </div>
               )}
             </div>
           </aside>
         )}
 
-        <main className="min-w-0 px-6 py-8 md:px-14 md:py-10">
+        <main className="min-w-0 px-6 py-8 md:px-10 md:py-10">
           <div className="mx-auto max-w-[820px]">
             <div className={cn('mb-5 flex items-center justify-between text-xs', fileToneClass)}>
               <div className="inline-flex items-center gap-2">
                 <BookOpen className="h-3.5 w-3.5" />
-                Typora 模式 · 极简留白 · 本地写作
+                {selectedNote ? (
+                  <span className="inline-flex items-center gap-2">
+                    <span>{draft.subject || '综合'}</span>
+                    {draft.tags && splitTags(draft.tags).length > 0 && (
+                      <>
+                        <span className="opacity-40">·</span>
+                        <span className="inline-flex items-center gap-1">
+                          {splitTags(draft.tags).map((tag) => (
+                            <span
+                              key={tag}
+                              className={cn(
+                                'inline-flex items-center px-1.5 py-px rounded text-[10px]',
+                                theme.id === 'night'
+                                  ? 'bg-[#232d3c] text-[#8ea2c2]'
+                                  : 'bg-[#ece9e3] text-[#6b645a]',
+                              )}
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                        </span>
+                      </>
+                    )}
+                  </span>
+                ) : (
+                  <span>笔记本</span>
+                )}
               </div>
-              <span>{charCount} 字符</span>
+              <span>{charCount}</span>
             </div>
 
             <div
@@ -873,7 +1047,7 @@ export default function DashboardNotebookPage() {
               <input
                 value={draft.title}
                 onChange={(event) => setDraft((prev) => ({ ...prev, title: event.target.value }))}
-                placeholder="无标题文稿"
+                placeholder=""
                 className={cn(
                   'h-12 w-full border-b bg-transparent px-0 text-[44px] leading-none font-semibold outline-none md:text-[48px]',
                   theme.id === 'night'
@@ -895,7 +1069,7 @@ export default function DashboardNotebookPage() {
                 <input
                   value={draft.tags}
                   onChange={(event) => setDraft((prev) => ({ ...prev, tags: event.target.value }))}
-                  placeholder="标签（逗号）"
+                  placeholder="标签"
                   className={cn(
                     'h-7 min-w-[210px] flex-1 border-b bg-transparent px-0 outline-none',
                     theme.id === 'night' ? 'border-[#3a4659]' : 'border-[#d2c8b9]',
@@ -1003,7 +1177,7 @@ export default function DashboardNotebookPage() {
                               }
                             }
                           }}
-                          placeholder="输入 Markdown 内容...（支持 / 命令、Ctrl/Cmd+B/I、Tab 缩进）"
+                          placeholder=""
                           className={cn(
                             'min-h-[76px] w-full resize-none overflow-hidden border-l border-dashed bg-transparent pl-3 text-[15px] leading-7 outline-none',
                             theme.id === 'night'
@@ -1082,7 +1256,7 @@ export default function DashboardNotebookPage() {
                             {block}
                           </ReactMarkdown>
                         ) : (
-                          <p className={cn('my-0 text-sm italic', fileToneClass)}>点击开始输入...</p>
+                          <p className={cn('my-0 text-sm italic', fileToneClass)}>&nbsp;</p>
                         )}
                       </button>
                     )}
@@ -1098,11 +1272,71 @@ export default function DashboardNotebookPage() {
               </button>
             </article>
 
-            <p className={cn('mt-8 text-xs', fileToneClass)}>
-              {statusText}。本页仅写入浏览器本地存储，不涉及团队协作或在线数据库。
+            <p className={cn('mt-8 text-xs opacity-60', fileToneClass)}>
+              {statusText}
             </p>
           </div>
         </main>
+
+        {/* Right Sidebar - TOC */}
+        {!focusMode && (
+          <aside className={cn('border-l flex flex-col', asideBgClass)}>
+            <div className="px-4 pt-6 pb-3">
+              <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.15em] font-semibold opacity-80">
+                <ListTree className="h-3.5 w-3.5" />
+                大纲
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto px-3 pb-4">
+              {headings.length > 0 ? (
+                <div className="space-y-0.5">
+                  {headings.map((item) => (
+                    <button
+                      key={item.slug}
+                      type="button"
+                      onClick={() => {
+                        const node = document.getElementById(item.slug);
+                        node?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      }}
+                      className={cn(
+                        'block w-full truncate py-1.5 text-left text-[12px] rounded-md px-2 transition-all',
+                        theme.id === 'night'
+                          ? 'text-[#b8c8de] hover:bg-[#232d3c] hover:text-[#dce6f6]'
+                          : 'text-[#5f584d] hover:bg-[#e7e2d9] hover:text-[#3c342b]',
+                      )}
+                      style={{ paddingLeft: `${(item.level - 1) * 12 + 8}px` }}
+                    >
+                      <span
+                        className={cn(
+                          'inline-block w-1.5 h-1.5 rounded-full mr-2',
+                          item.level === 1
+                            ? theme.id === 'night'
+                              ? 'bg-purple-400'
+                              : 'bg-purple-500'
+                            : theme.id === 'night'
+                              ? 'bg-gray-600'
+                              : 'bg-gray-400',
+                        )}
+                      />
+                      {item.text}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <p
+                    className={cn(
+                      'text-[11px] opacity-40',
+                      theme.id === 'night' ? 'text-[#6b7d9a]' : 'text-[#8a8075]',
+                    )}
+                  >
+                    暂无大纲
+                  </p>
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   );

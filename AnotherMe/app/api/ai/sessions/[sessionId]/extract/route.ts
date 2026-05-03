@@ -23,6 +23,8 @@ export async function POST(
     const body = (await request.json().catch(() => ({}))) as {
       userId?: string;
       extractVersion?: string;
+      latestUserMessageId?: string;
+      messageCount?: number;
     };
     const userId = await resolveRequestUserId(request, body.userId);
 
@@ -39,6 +41,8 @@ export async function POST(
       sessionId,
       userId,
       extractVersion: body.extractVersion,
+      latestUserMessageId: body.latestUserMessageId,
+      messageCount: body.messageCount,
     });
 
     return apiSuccess(

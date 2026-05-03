@@ -19,9 +19,9 @@ langchain_core_module.messages = langchain_core_messages
 sys.modules.setdefault("langchain_core", langchain_core_module)
 sys.modules.setdefault("langchain_core.messages", langchain_core_messages)
 
-from agents.vision_agent import VisionAgent
-from agents.geometry_fact_compiler import GeometryFactCompiler
-from agents.coordinate_scene import CoordinateSceneCompiler
+from agents.perception.vision_agent import VisionAgent
+from agents.perception.geometry_fact_compiler import GeometryFactCompiler
+from agents.perception.coordinate_scene import CoordinateSceneCompiler
 
 
 class VisionAgentTests(unittest.TestCase):

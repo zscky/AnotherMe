@@ -8,7 +8,7 @@
 import { NextRequest } from 'next/server';
 import { callLLM } from '@/lib/ai/llm';
 import { searchWithTavily, formatSearchResultsAsContext } from '@/lib/web-search/tavily';
-import { resolveWebSearchApiKey } from '@/lib/server/provider-config';
+import { resolveWebSearchApiKey, resolveWebSearchBaseUrl } from '@/lib/server/provider-config';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
 import {
@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
       finalQueryLength: searchQuery.finalQueryLength,
     });
 
-    const searchBaseUrl = clientBaseUrl?.trim();
+    const searchBaseUrl = resolveWebSearchBaseUrl(clientBaseUrl?.trim());
     const result = await searchWithTavily({
       query: searchQuery.query,
       apiKey,

@@ -29,11 +29,18 @@ import type {
   VideoGenerationOptions,
   VideoGenerationResult,
 } from '../types';
+import { runAsyncTaskWithPolling } from './async-task-runner';
 
 const DEFAULT_MODEL = 'doubao-seedance-1-5-pro-251215';
 const DEFAULT_BASE_URL = 'https://ark.cn-beijing.volces.com';
-const POLL_INTERVAL_MS = 5000;
-const MAX_POLL_ATTEMPTS = 60; // 5 minutes max
+const POLL_MAX_INTERVAL_MS = 5000;
+const POLL_INITIAL_INTERVAL_MS = 1000;
+const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+
+function getPollDelayMs(attempt: number): number {
+  const exponentialDelay = POLL_INITIAL_INTERVAL_MS * Math.pow(2, attempt);
+  return Math.min(POLL_MAX_INTERVAL_MS, exponentialDelay);
+}
 
 /** Response shape for task creation (only returns id) */
 interface SeedanceSubmitResponse {
@@ -232,14 +239,19 @@ export async function generateWithSeedance(
   options: VideoGenerationOptions,
 ): Promise<VideoGenerationResult> {
   const taskId = await submitSeedanceTask(config, options);
-
-  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    const result = await pollSeedanceTask(config, taskId);
-    if (result) return result;
-  }
-
-  throw new Error(
-    `Seedance video generation timed out after ${(MAX_POLL_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s (task: ${taskId})`,
-  );
+  return runAsyncTaskWithPolling<VideoGenerationResult | null, VideoGenerationResult>({
+    taskLabel: `Seedance video generation (task=${taskId})`,
+    timeoutMs: POLL_TIMEOUT_MS,
+    getPollDelayMs,
+    poll: async () => pollSeedanceTask(config, taskId),
+    isSucceeded: (result): result is VideoGenerationResult => result !== null,
+    getTimeoutMessage: () =>
+      `Seedance video generation timed out after ${Math.floor(POLL_TIMEOUT_MS / 1000)}s (task: ${taskId})`,
+    mapResult: (result) => {
+      if (!result) {
+        throw new Error('Seedance polling returned empty result unexpectedly');
+      }
+      return result;
+    },
+  });
 }

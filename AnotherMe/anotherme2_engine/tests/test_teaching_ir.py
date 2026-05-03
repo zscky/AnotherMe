@@ -1,8 +1,8 @@
 import unittest
 
-from agents.scene_graph_updater import SceneGraphUpdater
-from agents.state import ScriptStep
-from agents.teaching_ir import TeachingIRPlanner
+from agents.planning.scene_graph_updater import SceneGraphUpdater
+from agents.foundation.state import ScriptStep
+from agents.planning.teaching_ir import TeachingIRPlanner
 
 
 class TeachingIRTests(unittest.TestCase):
@@ -81,6 +81,159 @@ class TeachingIRTests(unittest.TestCase):
         action_names = [item.get("action") for item in step_two["actions"]]
         self.assertIn("animate_fold", action_names)
         self.assertIn("draw_perpendicular_auxiliary", action_names)
+        self.assertEqual(teaching_ir["global"]["fold_plan"]["axis"], "seg_DE")
+        self.assertTrue(step_two.get("fold_execution", {}).get("is_fold_step", False))
+        self.assertIn("B1", step_two.get("fold_execution", {}).get("moving_part", []))
+
+    def test_extra_geometry_hints_do_not_force_fold_on_non_fold_step(self) -> None:
+        metadata = self._metadata()
+        metadata["problem_pattern"] = {
+            "problem_pattern": "fold_transform",
+            "sub_pattern": "fold_point_to_point_distance",
+            "requires_geometry_animation": True,
+            "recommended_geometry_actions": ["animate_fold", "draw_perpendicular_auxiliary"],
+        }
+        metadata["vision_semantic_signals"] = {
+            "needs_extra_geometry_animation": True,
+            "recommended_geometry_actions": ["animate_fold", "draw_perpendicular_auxiliary"],
+        }
+
+        geometry_ir = self.planner.build_geometry_ir(
+            metadata=metadata,
+            problem_text="沿DE折叠后，求像点到 BC 的距离",
+        )
+
+        step = ScriptStep(
+            id=1,
+            title="复习已知条件",
+            duration=2.0,
+            narration="先整理已知，不执行折叠。",
+            visual_cues=["高亮 AB"],
+        )
+
+        teaching_ir = self.planner.build_teaching_ir(
+            steps=[step],
+            geometry_ir=geometry_ir,
+            metadata=metadata,
+            problem_text="沿DE折叠后，求像点到 BC 的距离",
+        )
+        action_names = [item.get("action") for item in teaching_ir["steps"][0]["actions"]]
+        self.assertNotIn("animate_fold", action_names)
+
+    def test_extra_geometry_hints_perpendicular_requires_distance_signal(self) -> None:
+        metadata = self._metadata()
+        metadata["problem_pattern"] = {
+            "problem_pattern": "fold_transform",
+            "sub_pattern": "fold_point_to_point_distance",
+            "requires_geometry_animation": True,
+            "recommended_geometry_actions": ["draw_perpendicular_auxiliary"],
+        }
+        metadata["vision_semantic_signals"] = {
+            "needs_extra_geometry_animation": True,
+            "recommended_geometry_actions": ["draw_perpendicular_auxiliary"],
+        }
+
+        geometry_ir = self.planner.build_geometry_ir(
+            metadata=metadata,
+            problem_text="沿DE折叠后，求像点到 BC 的距离",
+        )
+
+        step = ScriptStep(
+            id=1,
+            title="复习角度关系",
+            duration=2.0,
+            narration="先说明角平分关系。",
+            visual_cues=["高亮 DE"],
+        )
+
+        teaching_ir = self.planner.build_teaching_ir(
+            steps=[step],
+            geometry_ir=geometry_ir,
+            metadata=metadata,
+            problem_text="沿DE折叠后，求像点到 BC 的距离",
+        )
+        actions = teaching_ir["steps"][0]["actions"]
+        perpendicular_actions = [
+            item for item in actions if item.get("action") == "draw_perpendicular_auxiliary"
+        ]
+        self.assertFalse(perpendicular_actions)
+
+    def test_teaching_ir_auto_fold_animation_runs_once_without_refold_signal(self) -> None:
+        metadata = self._metadata()
+        metadata["problem_pattern"] = {
+            "problem_pattern": "fold_transform",
+            "sub_pattern": "fold_point_to_point_distance",
+            "requires_geometry_animation": True,
+            "recommended_geometry_actions": ["animate_fold"],
+        }
+        metadata["vision_semantic_signals"] = {
+            "needs_extra_geometry_animation": True,
+            "recommended_geometry_actions": ["animate_fold"],
+        }
+        geometry_ir = self.planner.build_geometry_ir(
+            metadata=metadata,
+            problem_text="沿DE折叠后，求距离",
+        )
+
+        steps = [
+            ScriptStep(
+                id=1,
+                title="执行折叠",
+                duration=2.0,
+                narration="沿DE折叠，得到像点。",
+                visual_cues=[],
+            ),
+            ScriptStep(
+                id=2,
+                title="折叠后计算",
+                duration=2.0,
+                narration="利用折叠后的关系计算长度。",
+                visual_cues=[],
+            ),
+        ]
+
+        teaching_ir = self.planner.build_teaching_ir(
+            steps=steps,
+            geometry_ir=geometry_ir,
+            metadata=metadata,
+            problem_text="沿DE折叠后，求距离",
+        )
+        first_actions = [item.get("action") for item in teaching_ir["steps"][0]["actions"]]
+        second_actions = [item.get("action") for item in teaching_ir["steps"][1]["actions"]]
+
+        self.assertIn("animate_fold", first_actions)
+        self.assertNotIn("animate_fold", second_actions)
+
+    def test_fold_image_distance_auxiliary_requires_explicit_fold_signal(self) -> None:
+        metadata = self._metadata()
+        metadata["problem_pattern"] = {
+            "problem_pattern": "fold_transform",
+            "sub_pattern": "fold_point_to_point_distance",
+        }
+        geometry_ir = self.planner.build_geometry_ir(
+            metadata=metadata,
+            problem_text="沿DE折叠后，求距离",
+        )
+
+        step = ScriptStep(
+            id=1,
+            title="计算距离",
+            duration=2.0,
+            narration="计算 C' 到 BC 的距离。",
+            visual_cues=["距离"],
+        )
+        teaching_ir = self.planner.build_teaching_ir(
+            steps=[step],
+            geometry_ir=geometry_ir,
+            metadata=metadata,
+            problem_text="沿DE折叠后，求距离",
+        )
+        reasons = [
+            str(item.get("reason", ""))
+            for item in teaching_ir["steps"][0]["actions"]
+            if item.get("action") == "draw_perpendicular_auxiliary"
+        ]
+        self.assertNotIn("fold_image_distance", reasons)
 
     def test_build_teaching_ir_does_not_emit_fold_actions_without_axis(self) -> None:
         metadata = self._metadata()
@@ -384,6 +537,46 @@ class TeachingIRTests(unittest.TestCase):
         self.assertTrue(primitive_display.get("seg_DE", {}).get("show", False))
         self.assertFalse(primitive_display.get("seg_AB", {}).get("show", True))
 
+    def test_scene_graph_updater_hides_derived_segments_when_not_focused(self) -> None:
+        updater = SceneGraphUpdater()
+        base_scene = self._metadata()["drawable_scene"]
+        base_scene["points"].append(
+            {
+                "id": "C1",
+                "coord": [2.2, 0.8],
+                "derived": {"type": "reflect_point", "source": "C", "axis": ["D", "E"]},
+            }
+        )
+        base_scene["primitives"].append(
+            {"id": "seg_B1C1", "type": "segment", "points": ["B1", "C1"]}
+        )
+        base_scene.setdefault("display", {}).setdefault("primitives", {})["seg_B1C1"] = {
+            "source": "given"
+        }
+
+        step = ScriptStep(
+            id=1,
+            title="观察原图",
+            duration=2.0,
+            narration="只观察菱形边。",
+            visual_cues=["高亮 AB"],
+        )
+        teaching_step = {
+            "step_id": 1,
+            "focus_targets": ["seg_AB"],
+            "actions": [{"action": "highlight_entity", "targets": ["seg_AB"]}],
+            "animation_policy": "auto",
+        }
+
+        step_scene = updater.build_step_scene(
+            base_scene_graph=base_scene,
+            step=step,
+            step_index=1,
+            teaching_step=teaching_step,
+        )
+        primitive_display = (step_scene["scene"].get("display") or {}).get("primitives") or {}
+        self.assertFalse(primitive_display.get("seg_B1C1", {}).get("show", True))
+
     def test_scene_graph_updater_auto_does_not_transform_axis_observation_step(self) -> None:
         updater = SceneGraphUpdater()
         base_scene = self._metadata()["drawable_scene"]
@@ -409,6 +602,65 @@ class TeachingIRTests(unittest.TestCase):
         )
 
         operations = step_scene["operations"]
+        self.assertFalse(any(item.get("type") == "transform" for item in operations))
+
+    def test_scene_graph_updater_suppresses_auto_transform_after_main_fold(self) -> None:
+        updater = SceneGraphUpdater()
+        base_scene = self._metadata()["drawable_scene"]
+        step = ScriptStep(
+            id=3,
+            title="折叠后计算",
+            duration=2.0,
+            narration="根据折叠后的对应关系继续计算。",
+            visual_cues=["折叠后"],
+        )
+        teaching_step = {
+            "step_id": 3,
+            "focus_targets": ["B1"],
+            "actions": [{"action": "highlight_entity", "targets": ["B1"]}],
+            "animation_policy": "auto",
+            "fold_execution": {
+                "is_fold_step": False,
+                "fold_emitted_before": True,
+                "allow_refold": False,
+                "suppress_auto_transform": True,
+            },
+        }
+
+        step_scene = updater.build_step_scene(
+            base_scene_graph=base_scene,
+            step=step,
+            step_index=3,
+            teaching_step=teaching_step,
+        )
+        operations = step_scene["operations"]
+        self.assertFalse(any(item.get("type") == "transform" for item in operations))
+
+    def test_scene_graph_updater_create_image_point_maps_to_maintain(self) -> None:
+        updater = SceneGraphUpdater()
+        base_scene = self._metadata()["drawable_scene"]
+        step = ScriptStep(
+            id=2,
+            title="创建像点",
+            duration=2.0,
+            narration="创建 B 的像点 B1。",
+            visual_cues=[],
+        )
+        teaching_step = {
+            "step_id": 2,
+            "focus_targets": ["B1"],
+            "actions": [{"action": "create_image_point", "from": "B", "to": "B1"}],
+            "animation_policy": "required",
+        }
+
+        step_scene = updater.build_step_scene(
+            base_scene_graph=base_scene,
+            step=step,
+            step_index=2,
+            teaching_step=teaching_step,
+        )
+        operations = step_scene["operations"]
+        self.assertTrue(any(item.get("type") == "maintain" for item in operations))
         self.assertFalse(any(item.get("type") == "transform" for item in operations))
 
 

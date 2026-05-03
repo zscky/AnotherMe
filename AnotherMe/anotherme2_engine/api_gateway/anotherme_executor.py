@@ -45,11 +45,12 @@ def _generation_subprocess_entry(
     problem_text: str | None,
     output_dir: str,
     geometry_file: str | None,
+    learner_memory: Dict[str, Any] | None,
     export_ggb: bool,
     result_queue: "mp.queues.Queue",
 ) -> None:
     try:
-        from agents.config import build_default_llm_config, build_vision_model_config
+        from agents.foundation.config import build_default_llm_config, build_vision_model_config
         from main import MathVideoGenerator
 
         generator = MathVideoGenerator(
@@ -62,6 +63,7 @@ def _generation_subprocess_entry(
             output_dir=output_dir,
             geometry_file=geometry_file,
             export_ggb=export_ggb,
+            learner_memory=learner_memory if isinstance(learner_memory, dict) else None,
         )
         if not str(final_video_path or "").strip():
             raise RuntimeError("AnotherMe2 generator returned empty output path")
@@ -86,6 +88,7 @@ def _run_generation_with_timeout(
     problem_text: str | None,
     output_dir: str,
     geometry_file: str | None,
+    learner_memory: Dict[str, Any] | None,
     export_ggb: bool,
     timeout_seconds: int,
 ) -> str:
@@ -99,6 +102,7 @@ def _run_generation_with_timeout(
             problem_text,
             output_dir,
             geometry_file,
+            learner_memory,
             export_ggb,
             result_queue,
         ),
@@ -205,8 +209,8 @@ def _render_text_image(text: str, path: Path) -> None:
 
 
 def build_requirement_from_photo(image_path: str) -> str:
-    from agents.config import build_ocr_model_config, build_vision_model_config
-    from agents.vision_tool import VisionTool
+    from agents.foundation.config import build_ocr_model_config, build_vision_model_config
+    from agents.perception.vision_tool import VisionTool
 
     vision = VisionTool(
         build_vision_model_config(),
@@ -216,7 +220,7 @@ def build_requirement_from_photo(image_path: str) -> str:
     geometry_hint = (vision.describe_geometry(image_path) or "").strip()
     snippet = geometry_hint[:600]
     return (
-        "请基于以下学生拍题内容生成一节讲解课程，包含概念回顾、解题步骤、易错点与练习建议。\n"
+        "请基于以下学生拍题内容生成一节题目讲解课程，直接进入题意分析与分步求解，讲解要细致并覆盖易错点。\n"
         f"题目OCR：{ocr_text}\n"
         f"图形摘要：{snippet}"
     )
@@ -262,6 +266,7 @@ def run_problem_video_job(
             problem_text=payload.get("problem_text"),
             output_dir=str(output_dir),
             geometry_file=str(geometry_local) if geometry_local else None,
+            learner_memory=payload.get("learner_memory") if isinstance(payload.get("learner_memory"), dict) else None,
             export_ggb=True,
             timeout_seconds=timeout_seconds,
         )

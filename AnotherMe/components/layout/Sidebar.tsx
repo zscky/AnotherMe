@@ -14,10 +14,12 @@ import {
   BarChart2,
   Headphones,
   MessageSquare,
-  Library
+  Library,
+  Stethoscope,
+  BookText,
 } from 'lucide-react';
 import Image from 'next/image';
-import { useAuth } from '@/components/auth/auth-provider';
+import { useAuth } from '@/features/auth/components/auth-provider';
 import { useMemo, useState } from 'react';
 
 const navItems: Array<{
@@ -30,8 +32,10 @@ const navItems: Array<{
   { name: '我的课程', href: '/classes', icon: Library },
   { name: '创建课堂', href: '/create-class', icon: BookOpen },
   { name: '拍题视频', href: '/photo-to-video', icon: Camera },
+  { name: '活书引擎', href: '/live-book', icon: BookText },
   { name: '笔记本', href: '/notebook', icon: NotebookPen },
   { name: '数据统计', href: '/statistics', icon: BarChart2 },
+  { name: '诊断练习', href: '/diagnostic', icon: Stethoscope },
   { name: '消息中心', href: '/messages', icon: MessageSquare },
   { name: '系统设置', href: '/settings', icon: Settings },
 ];
@@ -132,6 +136,7 @@ export function Sidebar() {
             alt="User"
             width={48}
             height={48}
+            loading="eager"
             referrerPolicy="no-referrer"
           />
         </div>

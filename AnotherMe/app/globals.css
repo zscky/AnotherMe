@@ -160,6 +160,152 @@
   }
 }
 
+/* ─── AI Thinking Animation Effects ─── */
+
+/* Neural pulse dots for thinking state */
+@keyframes neural-pulse {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+.neural-dot {
+  animation: neural-pulse 1.2s ease-in-out infinite;
+}
+
+.neural-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.neural-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* Brain wave glow animation */
+@keyframes brain-wave {
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(0.95);
+    filter: drop-shadow(0 0 2px currentColor);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+    filter: drop-shadow(0 0 8px currentColor);
+  }
+}
+
+.animate-brain-wave {
+  animation: brain-wave 1.5s ease-in-out infinite;
+}
+
+/* Ripple thinking effect */
+@keyframes thinking-ripple {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.thinking-ripple {
+  position: relative;
+}
+
+.thinking-ripple::before,
+.thinking-ripple::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  opacity: 0;
+  animation: thinking-ripple 2s ease-out infinite;
+}
+
+.thinking-ripple::after {
+  animation-delay: 1s;
+}
+
+/* Glow border animation for thinking cards */
+@keyframes border-glow {
+  0%, 100% {
+    border-color: rgba(217, 119, 6, 0.3);
+    box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.1);
+  }
+  50% {
+    border-color: rgba(217, 119, 6, 0.6);
+    box-shadow: 0 0 15px -3px rgba(217, 119, 6, 0.3);
+  }
+}
+
+.animate-border-glow {
+  animation: border-glow 2s ease-in-out infinite;
+}
+
+/* Thinking card entrance animation */
+@keyframes thinking-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-thinking-enter {
+  animation: thinking-enter 0.35s ease-out forwards;
+}
+
+/* Streaming cursor blink */
+@keyframes cursor-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.streaming-cursor::after {
+  content: '|';
+  animation: cursor-blink 1s step-end infinite;
+  margin-left: 2px;
+}
+
+/* Enhanced shimmer for thinking text */
+@keyframes text-shimmer {
+  0% {
+    background-position: -200% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+.thinking-text-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-muted-foreground) 0%,
+    var(--color-foreground) 50%,
+    var(--color-muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: text-shimmer 2.5s ease-in-out infinite;
+}
+
 /* Breathing bars for presentation speech bubbles (parent is h-3.5 = 14px) */
 @keyframes breathing-bar-1 {
   0%,
@@ -226,6 +372,34 @@
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Spin animation for loading indicators */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Pulse animation for active states */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 .workspace-app {

@@ -43,6 +43,9 @@ RUN addgroup --system --gid 1001 nodejs && \
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# sql.js loads wasm at runtime from node_modules; standalone output may omit it.
+RUN mkdir -p /app/node_modules/sql.js/dist
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/sql.js/dist/sql-wasm.wasm /app/node_modules/sql.js/dist/sql-wasm.wasm
 
 USER nextjs
 

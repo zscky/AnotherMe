@@ -160,6 +160,7 @@ export interface SettingsState {
   chatAreaWidth: number;
 
   // Actions
+  setProvider: (providerId: ProviderId) => void;
   setModel: (providerId: ProviderId, modelId: string) => void;
   setProviderConfig: (providerId: ProviderId, config: Partial<ProvidersConfig[ProviderId]>) => void;
   setProvidersConfig: (config: ProvidersConfig) => void;
@@ -587,6 +588,7 @@ export const useSettingsStore = create<SettingsState>()(
         ...defaultWebSearchConfig,
 
         // Actions
+        setProvider: (providerId) => set({ providerId }),
         setModel: (providerId, modelId) => set({ providerId, modelId }),
 
         setProviderConfig: (providerId, config) =>

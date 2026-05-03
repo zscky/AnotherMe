@@ -20,14 +20,17 @@ import type {
   VideoGenerationOptions,
   VideoGenerationResult,
 } from '../types';
+import { runAsyncTaskWithPolling } from './async-task-runner';
 
 const DEFAULT_MODEL = 'grok-imagine-video';
 const DEFAULT_BASE_URL = 'https://api.x.ai/v1';
-const POLL_INTERVAL_MS = 10_000; // 10 seconds
-const MAX_POLL_ATTEMPTS = 60; // 10 minutes max
+const POLL_MAX_INTERVAL_MS = 10_000; // 10 seconds
+const POLL_INITIAL_INTERVAL_MS = 1_000;
+const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function getPollDelayMs(attempt: number): number {
+  const exponentialDelay = POLL_INITIAL_INTERVAL_MS * Math.pow(2, attempt);
+  return Math.min(POLL_MAX_INTERVAL_MS, exponentialDelay);
 }
 
 /** Dimension defaults per aspect ratio */
@@ -181,11 +184,17 @@ export async function generateWithGrokVideo(
   const requestId = await submitVideoGeneration(baseUrl, config.apiKey, model, options);
 
   // 2. Poll until done
-  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
-    await delay(POLL_INTERVAL_MS);
-    const result = await pollVideoStatus(baseUrl, config.apiKey, requestId);
-
-    if (result.status === 'done') {
+  return runAsyncTaskWithPolling<GrokVideoPollResponse, VideoGenerationResult>({
+    taskLabel: `Grok video generation (request=${requestId})`,
+    timeoutMs: POLL_TIMEOUT_MS,
+    getPollDelayMs,
+    poll: async () => pollVideoStatus(baseUrl, config.apiKey, requestId),
+    isSucceeded: (result) => result.status === 'done',
+    isFailed: (result) => result.status === 'failed',
+    getFailureMessage: (result) => `Grok video generation failed: ${JSON.stringify(result)}`,
+    getTimeoutMessage: () =>
+      `Grok video generation timed out after ${Math.floor(POLL_TIMEOUT_MS / 1000)}s (request: ${requestId})`,
+    mapResult: (result) => {
       if (!result.video?.url) {
         throw new Error('Grok video task completed but no video URL returned');
       }
@@ -196,14 +205,6 @@ export async function generateWithGrokVideo(
         width,
         height,
       };
-    }
-
-    if (result.status === 'failed') {
-      throw new Error(`Grok video generation failed: ${JSON.stringify(result)}`);
-    }
-  }
-
-  throw new Error(
-    `Grok video generation timed out after ${(MAX_POLL_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s (request: ${requestId})`,
-  );
+    },
+  });
 }

@@ -27,14 +27,17 @@ import type {
   VideoGenerationOptions,
   VideoGenerationResult,
 } from '../types';
+import { runAsyncTaskWithPolling } from './async-task-runner';
 
 const DEFAULT_MODEL = 'veo-3.0-generate-001';
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com';
-const POLL_INTERVAL_MS = 10_000; // 10 seconds
-const MAX_POLL_ATTEMPTS = 60; // 10 minutes max
+const POLL_MAX_INTERVAL_MS = 10_000; // 10 seconds
+const POLL_INITIAL_INTERVAL_MS = 1_000;
+const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function getPollDelayMs(attempt: number): number {
+  const exponentialDelay = POLL_INITIAL_INTERVAL_MS * Math.pow(2, attempt);
+  return Math.min(POLL_MAX_INTERVAL_MS, exponentialDelay);
 }
 
 /** Dimension defaults per aspect ratio */
@@ -212,42 +215,44 @@ export async function generateWithVeo(
   }
 
   // 2. Poll until done
-  let current = operation;
-  let pollCount = 0;
-  while (!current.done) {
-    if (pollCount >= MAX_POLL_ATTEMPTS) {
-      throw new Error('Veo video generation timed out after 10 minutes');
-    }
-    await delay(POLL_INTERVAL_MS);
-    current = await pollOperation(baseUrl, config.apiKey, model, current.name);
-    pollCount++;
-  }
+  return runAsyncTaskWithPolling<VeoOperation, VideoGenerationResult>({
+    taskLabel: `Veo video generation (operation=${operation.name})`,
+    timeoutMs: POLL_TIMEOUT_MS,
+    getPollDelayMs,
+    poll: async (attempt) => {
+      if (attempt === 0) {
+        return operation;
+      }
+      return pollOperation(baseUrl, config.apiKey, model, operation.name);
+    },
+    isSucceeded: (current) => current.done === true,
+    isFailed: (current) => Boolean(current.error),
+    getFailureMessage: (current) =>
+      `Veo generation failed: ${current.error?.code} - ${current.error?.message}`,
+    getTimeoutMessage: () =>
+      `Veo video generation timed out after ${Math.floor(POLL_TIMEOUT_MS / 1000)}s`,
+    mapResult: (current) => {
+      const videos = current.response?.videos;
+      if (!videos || videos.length === 0) {
+        throw new Error('Veo returned no generated videos');
+      }
 
-  // 3. Check for errors
-  if (current.error) {
-    throw new Error(`Veo generation failed: ${current.error.code} - ${current.error.message}`);
-  }
+      const first = videos[0];
+      if (!first.bytesBase64Encoded) {
+        throw new Error('Veo returned video entry without data');
+      }
 
-  // 4. Extract inline base64 video from response.videos[]
-  const videos = current.response?.videos;
-  if (!videos || videos.length === 0) {
-    throw new Error('Veo returned no generated videos');
-  }
+      const base64 = first.bytesBase64Encoded;
+      const mimeType = first.mimeType || 'video/mp4';
 
-  const first = videos[0];
-  if (!first.bytesBase64Encoded) {
-    throw new Error('Veo returned video entry without data');
-  }
+      const { width, height } = getDimensions(options.aspectRatio);
 
-  const base64 = first.bytesBase64Encoded;
-  const mimeType = first.mimeType || 'video/mp4';
-
-  const { width, height } = getDimensions(options.aspectRatio);
-
-  return {
-    url: `data:${mimeType};base64,${base64}`,
-    duration: options.duration || 8,
-    width,
-    height,
-  };
+      return {
+        url: `data:${mimeType};base64,${base64}`,
+        duration: options.duration || 8,
+        width,
+        height,
+      };
+    },
+  });
 }

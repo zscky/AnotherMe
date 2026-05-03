@@ -5,9 +5,12 @@
  */
 
 import type { StatelessChatRequest } from '@/lib/types/chat';
+import type { LearningContext } from '@/lib/types/learning-context';
 import type { AgentConfig } from '@/lib/orchestration/registry/types';
 import type { WhiteboardActionRecord, AgentTurnSummary } from './director-prompt';
 import { getActionDescriptions, getEffectiveActions } from './tool-schemas';
+import { globalStreamBus } from './stream-bus';
+import { createTraceEvent } from '@/lib/types/teaching-trace';
 
 // ==================== Role Guidelines ====================
 
@@ -98,6 +101,7 @@ export function buildStructuredPrompt(
   userProfile?: { nickname?: string; bio?: string },
   agentResponses?: AgentTurnSummary[],
   systemPromptAddendum?: string,
+  learningContext?: LearningContext,
 ): string {
   // Determine current scene type for action filtering
   const currentScene = storeState.currentSceneId
@@ -122,6 +126,7 @@ export function buildStructuredPrompt(
 You are teaching ${userProfile.nickname || 'a student'}.${userProfile.bio ? `\nTheir background: ${userProfile.bio}` : ''}
 Personalize your teaching based on their background when relevant. Address them by name naturally.\n`
       : '';
+  const learningContextSection = buildLearningContextSection(learningContext);
 
   // Build peer context section (what agents already said this round)
   const peerContext = buildPeerContextSection(agentResponses, agentConfig.name);
@@ -178,7 +183,7 @@ Personalize your teaching based on their background when relevant. Address them 
     ? `\n# Language (CRITICAL)\nYou MUST speak in ${courseLanguage === 'zh-CN' ? 'Chinese (Simplified)' : courseLanguage === 'en-US' ? 'English' : courseLanguage}. ALL text content in your response MUST be in this language.\n`
     : '';
 
-  return `# Role
+  const promptText = `# Role
 You are ${agentConfig.name}.
 
 ## Your Personality
@@ -186,7 +191,7 @@ ${agentConfig.persona}
 
 ## Your Classroom Role
 ${roleGuideline}
-${studentProfileSection}${peerContext}${languageConstraint}${addendumSection}
+${studentProfileSection}${learningContextSection}${peerContext}${languageConstraint}${addendumSection}
 # Output Format
 You MUST output a JSON array for ALL responses. Each element is an object with a \`type\` field:
 
@@ -259,6 +264,92 @@ ${discussionContext.prompt ? `Guiding prompt: ${discussionContext.prompt}` : ''}
 IMPORTANT: As you are starting this discussion, begin by introducing the topic naturally to the students. Engage them and invite their thoughts. Do not wait for user input - you speak first.`
       : ''
   }`;
+
+  globalStreamBus.publish(
+    createTraceEvent(
+      'prompt_built',
+      agentConfig.id,
+      {
+        agentId: agentConfig.id,
+        agentRole: agentConfig.role,
+        promptLength: promptText.length,
+        includesKtContext: Boolean(learningContext?.knowledgeTracing?.teachingDecisions?.length),
+        includesTeachingDecisions: Boolean(learningContext?.knowledgeTracing?.teachingDecisions?.length),
+      },
+      { stage: 'agent_invoke' },
+    ),
+  );
+
+  return promptText;
+}
+
+function buildLearningContextSection(context?: LearningContext | null): string {
+  if (!context) return '';
+
+  const profile = context.studentProfile;
+  const lines: string[] = [];
+  lines.push(`Source: ${context.metadata.source}`);
+  if (context.metadata.topic) lines.push(`Topic: ${context.metadata.topic}`);
+  if (context.classroomId) lines.push(`Classroom ID: ${context.classroomId}`);
+  if (context.sceneId) lines.push(`Scene ID: ${context.sceneId}`);
+  if (context.aiSessionId) lines.push(`AI session ID: ${context.aiSessionId}`);
+
+  if (profile) {
+    if (profile.recentFocus) lines.push(`Recent focus: ${profile.recentFocus}`);
+    if (profile.weakSubjects.length > 0) {
+      lines.push(`Weak subjects: ${profile.weakSubjects.slice(0, 5).join(', ')}`);
+    }
+    if (profile.weakKnowledgePoints.length > 0) {
+      lines.push(`Weak knowledge points: ${profile.weakKnowledgePoints.slice(0, 8).join(', ')}`);
+    }
+    const stats = profile.learningStats;
+    lines.push(
+      `Learning stats: ${stats.records14d} recent records, ${stats.activeDays14} active days, ${stats.confusionRecords} confusion signals, ${stats.solvedRecords} solved signals.`,
+    );
+  }
+
+  // Knowledge Tracing: inject teaching decisions into prompt
+  const kt = context.knowledgeTracing;
+  const ktLines: string[] = [];
+  if (kt && kt.teachingDecisions.length > 0) {
+    ktLines.push('');
+    ktLines.push('# Knowledge Tracing & Teaching Strategy');
+    ktLines.push(
+      'The following decisions are based on Bayesian Knowledge Tracing (BKT) mastery probabilities. Use them to guide your next teaching move.',
+    );
+    for (const dec of kt.teachingDecisions) {
+      const actionLabels: Record<string, string> = {
+        reteach: '重新讲解',
+        give_hint: '提示引导',
+        worked_example: '分步示范',
+        variant_practice: '变式练习',
+        advance: '推进新知',
+        review_later: '间隔复习',
+      };
+      ktLines.push(
+        `- 知识点「${dec.knowledgePointId}」掌握概率 ${(dec.mastery * 100).toFixed(1)}%，建议策略：${actionLabels[dec.action] || dec.action}。原因：${dec.reason}`,
+      );
+    }
+    if (kt.weakestKnowledgePointContext) {
+      ktLines.push('');
+      ktLines.push('## Weakest Knowledge Point Detail');
+      ktLines.push(kt.weakestKnowledgePointContext);
+    }
+    ktLines.push(
+      'IMPORTANT: Do NOT dump all of this raw information to the student. Use it silently to decide pacing, examples, and whether to insert a diagnostic question or worked example.',
+    );
+  }
+
+  const enabledTools = context.enabledTools.filter((tool) => tool.enabled).map((tool) => tool.id);
+  if (enabledTools.length > 0) {
+    lines.push(`Enabled learning tools: ${enabledTools.join(', ')}`);
+  }
+
+  return `
+# Learning Context
+Use this context to personalize explanations, examples, pacing, and follow-up questions. Do not expose IDs or internal telemetry to the student.
+${lines.join('\n')}${ktLines.join('\n')}
+`;
 }
 
 // ==================== Length Guidelines ====================

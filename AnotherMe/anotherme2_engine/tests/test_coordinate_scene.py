@@ -1,9 +1,9 @@
 import unittest
 
-from agents.coordinate_scene import CoordinateSceneCompiler, CoordinateSceneError
-from agents.canvas_scene import CanvasScene
-from agents.codegen import TemplateCodeGenerator
-from agents.geometry_fact_compiler import GeometryFactCompiler
+from agents.perception.coordinate_scene import CoordinateSceneCompiler, CoordinateSceneError
+from agents.planning.canvas_scene import CanvasScene
+from agents.execution.codegen import TemplateCodeGenerator
+from agents.perception.geometry_fact_compiler import GeometryFactCompiler
 
 
 class CoordinateSceneCompilerTests(unittest.TestCase):

@@ -153,6 +153,20 @@ export interface MediaFileRecord {
 }
 
 /**
+ * MediaGenerationExperience table - generation outcomes for strategy learning
+ */
+export interface MediaGenerationExperienceRecord {
+  id?: number; // Auto increment
+  kind: 'image' | 'video';
+  providerId: string;
+  modelId?: string;
+  success: boolean;
+  errorCode?: string;
+  strategy: 'direct' | 'soften_prompt' | 'fallback_provider';
+  createdAt: number;
+}
+
+/**
  * GeneratedAgent table - AI-generated agent profiles
  */
 export interface GeneratedAgentRecord {
@@ -175,7 +189,7 @@ export function mediaFileKey(stageId: string, elementId: string): string {
 // ==================== Database Definition ====================
 
 const DATABASE_NAME = 'MAIC-Database';
-const _DATABASE_VERSION = 8;
+const _DATABASE_VERSION = 9;
 
 /**
  * MAIC Database Instance
@@ -191,6 +205,7 @@ class MAICDatabase extends Dexie {
   playbackState!: EntityTable<PlaybackStateRecord, 'stageId'>;
   stageOutlines!: EntityTable<StageOutlinesRecord, 'stageId'>;
   mediaFiles!: EntityTable<MediaFileRecord, 'id'>;
+  mediaGenerationExperiences!: EntityTable<MediaGenerationExperienceRecord, 'id'>;
   generatedAgents!: EntityTable<GeneratedAgentRecord, 'id'>;
 
   constructor() {
@@ -308,6 +323,21 @@ class MAICDatabase extends Dexie {
       stageOutlines: 'stageId',
       mediaFiles: 'id, stageId, [stageId+type]',
       generatedAgents: 'id, stageId',
+    });
+
+    // Version 9: Add mediaGenerationExperiences table for recovery strategy memory
+    this.version(9).stores({
+      stages: 'id, updatedAt',
+      scenes: 'id, stageId, order, [stageId+order]',
+      audioFiles: 'id, createdAt',
+      imageFiles: 'id, createdAt',
+      snapshots: '++id',
+      chatSessions: 'id, stageId, [stageId+createdAt]',
+      playbackState: 'stageId',
+      stageOutlines: 'stageId',
+      mediaFiles: 'id, stageId, [stageId+type]',
+      generatedAgents: 'id, stageId',
+      mediaGenerationExperiences: '++id, kind, providerId, success, errorCode, createdAt, [kind+providerId+success]',
     });
   }
 }

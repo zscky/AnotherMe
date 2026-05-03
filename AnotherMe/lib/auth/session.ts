@@ -8,6 +8,9 @@ import { AuthError, type AuthUser } from '@/lib/auth/types';
 export const AUTH_SESSION_COOKIE = 'anotherme_session';
 
 function isSecureCookie() {
+  const explicit = process.env.AUTH_COOKIE_SECURE?.trim().toLowerCase();
+  if (explicit === 'true') return true;
+  if (explicit === 'false') return false;
   return process.env.NODE_ENV === 'production';
 }
 

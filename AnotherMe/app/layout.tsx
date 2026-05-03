@@ -1,18 +1,12 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
 import './globals.css';
 import 'animate.css';
 import 'katex/dist/katex.min.css';
 import { ThemeProvider } from '@/lib/hooks/use-theme';
 import { I18nProvider } from '@/lib/hooks/use-i18n';
 import { Toaster } from '@/components/ui/sonner';
-import { ServerProvidersInit } from '@/components/server-providers-init';
-import { AuthProvider } from '@/components/auth/auth-provider';
-
-const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-sans',
-});
+import { ServerProvidersInit } from '@/components/layout/server-providers-init';
+import { AuthProvider } from '@/features/auth/components/auth-provider';
 
 export const metadata: Metadata = {
   title: '镜我 - AI 教育平台',
@@ -21,7 +15,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="zh-CN" className={`${inter.variable}`} suppressHydrationWarning>
+    <html lang="zh-CN" suppressHydrationWarning>
       <body className="font-sans antialiased" suppressHydrationWarning>
         <ThemeProvider>
           <AuthProvider>

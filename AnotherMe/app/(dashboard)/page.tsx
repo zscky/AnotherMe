@@ -229,8 +229,8 @@ export default function LearningPlanPage() {
             </div>
           </div>
 
-          <div className="flex-1 min-h-[160px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="flex-1 min-h-[160px] w-full" style={{ minHeight: 160 }}>
+            <ResponsiveContainer width="100%" height={160}>
               <PieChart>
                 <Pie
                   data={pieProgressData}
@@ -282,8 +282,8 @@ export default function LearningPlanPage() {
             </select>
           </div>
 
-          <div className="flex-1 w-full min-h-[250px]">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="flex-1 w-full min-h-[250px]" style={{ minHeight: 250 }}>
+            <ResponsiveContainer width="100%" height={250}>
               {timeView === 'month' ? (
                 <LineChart data={learningTimeMonth} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
@@ -359,6 +359,8 @@ export default function LearningPlanPage() {
               src="https://picsum.photos/seed/student/400/400"
               alt="Student"
               fill
+              loading="eager"
+              sizes="192px"
               className="object-cover rounded-full opacity-80 mix-blend-luminosity"
               referrerPolicy="no-referrer"
             />
@@ -380,8 +382,8 @@ export default function LearningPlanPage() {
             </div>
           </div>
 
-          <div className="flex-1 w-full min-h-[200px] mt-4">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="flex-1 w-full min-h-[200px] mt-4" style={{ minHeight: 200 }}>
+            <ResponsiveContainer width="100%" height={200}>
               <PieChart margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
                 <Pie
                   data={topicData}

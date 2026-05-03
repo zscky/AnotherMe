@@ -48,10 +48,10 @@ describe('provider-config', () => {
       expect(resolveApiKey('openai')).toBe('');
     });
 
-    it('prefers client key over server key', async () => {
+    it('prefers server key over client key', async () => {
       vi.stubEnv('OPENAI_API_KEY', 'sk-server');
       const { resolveApiKey } = await import('@/lib/server/provider-config');
-      expect(resolveApiKey('openai', 'sk-client')).toBe('sk-client');
+      expect(resolveApiKey('openai', 'sk-client')).toBe('sk-server');
     });
 
     it('resolves non-OpenAI providers via their env prefix', async () => {
@@ -77,6 +77,15 @@ describe('provider-config', () => {
       vi.stubEnv('OPENAI_BASE_URL', 'https://proxy.example.com/v1');
       const { resolveBaseUrl } = await import('@/lib/server/provider-config');
       expect(resolveBaseUrl('openai')).toBe('https://proxy.example.com/v1');
+    });
+
+    it('prefers server URL over client URL', async () => {
+      vi.stubEnv('OPENAI_API_KEY', 'sk-test');
+      vi.stubEnv('OPENAI_BASE_URL', 'https://server.example.com/v1');
+      const { resolveBaseUrl } = await import('@/lib/server/provider-config');
+      expect(resolveBaseUrl('openai', 'https://client.example.com/v1')).toBe(
+        'https://server.example.com/v1',
+      );
     });
 
     it('returns undefined when neither client nor server URL exists', async () => {
@@ -154,10 +163,38 @@ providers:
     });
   });
 
+  describe('server-providers.yml priority', () => {
+    it('prefers YAML provider config over env fallback', async () => {
+      vi.stubEnv('OPENAI_API_KEY', 'sk-env');
+      vi.stubEnv('OPENAI_BASE_URL', 'https://env.example.com/v1');
+      yamlOverride = `
+providers:
+  openai:
+    apiKey: sk-yaml
+    baseUrl: https://yaml.example.com/v1
+`;
+      const { resolveApiKey, resolveBaseUrl } = await import('@/lib/server/provider-config');
+      expect(resolveApiKey('openai', 'sk-client')).toBe('sk-yaml');
+      expect(resolveBaseUrl('openai', 'https://client.example.com/v1')).toBe(
+        'https://yaml.example.com/v1',
+      );
+    });
+  });
+
   describe('resolveWebSearchApiKey', () => {
-    it('returns client key first', async () => {
+    it('returns client key when no server key exists', async () => {
       const { resolveWebSearchApiKey } = await import('@/lib/server/provider-config');
       expect(resolveWebSearchApiKey('client-key')).toBe('client-key');
+    });
+
+    it('prefers server key over client key', async () => {
+      yamlOverride = `
+web-search:
+  tavily:
+    apiKey: tvly-server
+`;
+      const { resolveWebSearchApiKey } = await import('@/lib/server/provider-config');
+      expect(resolveWebSearchApiKey('client-key')).toBe('tvly-server');
     });
 
     it('falls back to TAVILY_API_KEY env var', async () => {

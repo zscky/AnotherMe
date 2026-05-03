@@ -10,10 +10,15 @@ import { useMediaGenerationStore } from '@/lib/store/media-generation';
 import { useSettingsStore } from '@/lib/store/settings';
 import { db, mediaFileKey } from '@/lib/utils/database';
 import type { SceneOutline } from '@/lib/types/generation';
-import type { MediaGenerationRequest } from '@/lib/media/types';
+import type { MediaGenerationRequest, VideoProviderId } from '@/lib/media/types';
+import { VIDEO_PROVIDERS } from '@/lib/media/video-providers';
 import { createLogger } from '@/lib/logger';
+import { recordMediaExperience, suggestFallbackVideoProvider } from '@/lib/media/media-experience';
 
 const log = createLogger('MediaOrchestrator');
+const MEDIA_GENERATION_MAX_CONCURRENCY = 2;
+const VIDEO_GATEWAY_POLL_INTERVAL_MS = 1500;
+const VIDEO_GATEWAY_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** Error with a structured errorCode from the API */
 class MediaApiError extends Error {
@@ -56,11 +61,20 @@ export async function generateMediaForOutlines(
   // Enqueue all as pending
   useMediaGenerationStore.getState().enqueueTasks(stageId, allRequests);
 
-  // Process requests serially — image/video APIs have limited concurrency
-  for (const req of allRequests) {
-    if (abortSignal?.aborted) break;
-    await generateSingleMedia(req, stageId, abortSignal);
-  }
+  // Process requests with limited concurrency to reduce end-to-end wait time
+  const concurrency = Math.min(MEDIA_GENERATION_MAX_CONCURRENCY, allRequests.length);
+  let nextIndex = 0;
+
+  const runWorker = async (): Promise<void> => {
+    while (!abortSignal?.aborted) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= allRequests.length) return;
+      await generateSingleMedia(allRequests[currentIndex], stageId, abortSignal);
+    }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
 }
 
 /**
@@ -107,6 +121,10 @@ async function generateSingleMedia(
   abortSignal?: AbortSignal,
 ): Promise<void> {
   const store = useMediaGenerationStore.getState();
+  if (abortSignal?.aborted) {
+    store.markPending(req.elementId);
+    return;
+  }
   store.markGenerating(req.elementId);
 
   try {
@@ -118,18 +136,35 @@ async function generateSingleMedia(
       const result = await callImageApi(req, abortSignal);
       resultUrl = result.url;
       mimeType = 'image/png';
+      await recordMediaExperience({
+        kind: 'image',
+        providerId: useSettingsStore.getState().imageProviderId,
+        modelId: useSettingsStore.getState().imageModelId,
+        success: true,
+        strategy: 'direct',
+      });
     } else {
-      const result = await callVideoApi(req, abortSignal);
+      const result = await generateVideoWithRecovery(req, abortSignal);
       resultUrl = result.url;
       posterUrl = result.poster;
       mimeType = 'video/mp4';
     }
 
-    if (abortSignal?.aborted) return;
+    if (abortSignal?.aborted) {
+      store.markPending(req.elementId);
+      return;
+    }
 
     // Fetch blob from URL
-    const blob = await fetchAsBlob(resultUrl);
-    const posterBlob = posterUrl ? await fetchAsBlob(posterUrl).catch(() => undefined) : undefined;
+    const blob = await fetchAsBlob(resultUrl, abortSignal);
+    const posterBlob = posterUrl
+      ? await fetchAsBlob(posterUrl, abortSignal).catch(() => undefined)
+      : undefined;
+
+    if (abortSignal?.aborted) {
+      store.markPending(req.elementId);
+      return;
+    }
 
     // Store in IndexedDB
     await db.mediaFiles.put({
@@ -153,11 +188,25 @@ async function generateSingleMedia(
     const posterObjectUrl = posterBlob ? URL.createObjectURL(posterBlob) : undefined;
     useMediaGenerationStore.getState().markDone(req.elementId, objectUrl, posterObjectUrl);
   } catch (err) {
-    if (abortSignal?.aborted) return;
+    if (abortSignal?.aborted) {
+      store.markPending(req.elementId);
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     const errorCode = err instanceof MediaApiError ? err.errorCode : undefined;
     log.error(`Failed ${req.elementId}:`, message);
     useMediaGenerationStore.getState().markFailed(req.elementId, message, errorCode);
+
+    if (req.type === 'image') {
+      await recordMediaExperience({
+        kind: 'image',
+        providerId: useSettingsStore.getState().imageProviderId,
+        modelId: useSettingsStore.getState().imageModelId,
+        success: false,
+        errorCode,
+        strategy: 'direct',
+      });
+    }
 
     // Persist non-retryable failures to IndexedDB so they survive page refresh
     if (errorCode) {
@@ -226,21 +275,33 @@ async function callImageApi(
 async function callVideoApi(
   req: MediaGenerationRequest,
   abortSignal?: AbortSignal,
+  override?: {
+    providerId?: VideoProviderId;
+    modelId?: string;
+    prompt?: string;
+  },
 ): Promise<{ url: string; poster?: string }> {
   const settings = useSettingsStore.getState();
-  const providerConfig = settings.videoProvidersConfig?.[settings.videoProviderId];
+  const providerId = override?.providerId || settings.videoProviderId;
+  const modelId = override?.modelId || settings.videoModelId;
+  const providerConfig = settings.videoProvidersConfig?.[providerId];
+  const generationMode =
+    String(process.env.NEXT_PUBLIC_VIDEO_GENERATION_MODE || '').toLowerCase() === 'gateway-job'
+      ? 'gateway-job'
+      : 'direct';
 
   const response = await fetch('/api/generate/video', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-video-provider': settings.videoProviderId || '',
-      'x-video-model': settings.videoModelId || '',
+      'x-video-provider': providerId || '',
+      'x-video-model': modelId || '',
       'x-api-key': providerConfig?.apiKey || '',
       'x-base-url': providerConfig?.baseUrl || '',
+      'x-video-generation-mode': generationMode,
     },
     body: JSON.stringify({
-      prompt: req.prompt,
+      prompt: override?.prompt || req.prompt,
       aspectRatio: req.aspectRatio,
     }),
     signal: abortSignal,
@@ -252,6 +313,19 @@ async function callVideoApi(
   }
 
   const data = await response.json();
+
+  if (response.status === 202 || data.job?.id) {
+    const jobId = data.job?.id;
+    if (!jobId || typeof jobId !== 'string') {
+      throw new MediaApiError('Video gateway job created without job id', 'INTERNAL_ERROR');
+    }
+
+    const result = await pollVideoGatewayJob(jobId, abortSignal);
+    const url = result?.url;
+    if (!url) throw new MediaApiError('No video URL in gateway result', 'GENERATION_FAILED');
+    return { url, poster: result?.poster };
+  }
+
   if (!data.success)
     throw new MediaApiError(data.error || 'Video generation failed', data.errorCode);
 
@@ -260,10 +334,181 @@ async function callVideoApi(
   return { url, poster: data.result?.poster };
 }
 
-async function fetchAsBlob(url: string): Promise<Blob> {
+async function pollVideoGatewayJob(
+  jobId: string,
+  abortSignal?: AbortSignal,
+): Promise<{ url: string; poster?: string }> {
+  const deadline = Date.now() + VIDEO_GATEWAY_TIMEOUT_MS;
+
+  while (!abortSignal?.aborted && Date.now() < deadline) {
+    const response = await fetch(`/api/generate/video?jobId=${encodeURIComponent(jobId)}`, {
+      method: 'GET',
+      signal: abortSignal,
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new MediaApiError(
+        data.error || `Video gateway poll failed: ${response.status}`,
+        data.errorCode,
+      );
+    }
+
+    const data = await response.json();
+    const job = data.job;
+    if (!job || typeof job !== 'object') {
+      throw new MediaApiError('Invalid video gateway job status response', 'INTERNAL_ERROR');
+    }
+
+    if (job.status === 'succeeded') {
+      const url = job.result?.url;
+      if (!url) {
+        throw new MediaApiError('Gateway job succeeded but no video URL returned', 'GENERATION_FAILED');
+      }
+      return {
+        url,
+        poster: job.result?.poster,
+      };
+    }
+
+    if (job.status === 'failed') {
+      throw new MediaApiError(job.error || 'Video gateway job failed', job.errorCode);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, VIDEO_GATEWAY_POLL_INTERVAL_MS));
+  }
+
+  throw new MediaApiError('Video gateway job timed out', 'UPSTREAM_TIMEOUT');
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (error instanceof MediaApiError) {
+    return error.errorCode;
+  }
+  return undefined;
+}
+
+function makeSafePrompt(prompt: string): string {
+  const normalized = prompt.trim();
+  if (!normalized) return normalized;
+  return `${normalized}. Educational visual style, avoid realistic people, avoid sensitive content.`;
+}
+
+function getConfiguredVideoProviderIds(): VideoProviderId[] {
+  const settings = useSettingsStore.getState();
+  const ids = Object.keys(settings.videoProvidersConfig || {}) as VideoProviderId[];
+  return ids.filter((providerId) => {
+    const cfg = settings.videoProvidersConfig?.[providerId];
+    return Boolean(cfg?.isServerConfigured || cfg?.apiKey);
+  });
+}
+
+async function generateVideoWithRecovery(
+  req: MediaGenerationRequest,
+  abortSignal?: AbortSignal,
+): Promise<{ url: string; poster?: string }> {
+  const settings = useSettingsStore.getState();
+  const currentProviderId = settings.videoProviderId;
+  const currentModelId = settings.videoModelId;
+
+  try {
+    const result = await callVideoApi(req, abortSignal, {
+      providerId: currentProviderId,
+      modelId: currentModelId,
+    });
+    await recordMediaExperience({
+      kind: 'video',
+      providerId: currentProviderId,
+      modelId: currentModelId,
+      success: true,
+      strategy: 'direct',
+    });
+    return result;
+  } catch (error) {
+    const directErrorCode = getErrorCode(error);
+    await recordMediaExperience({
+      kind: 'video',
+      providerId: currentProviderId,
+      modelId: currentModelId,
+      success: false,
+      errorCode: directErrorCode,
+      strategy: 'direct',
+    });
+
+    if (abortSignal?.aborted) {
+      throw error;
+    }
+
+    if (directErrorCode === 'CONTENT_SENSITIVE') {
+      const softenedPrompt = makeSafePrompt(req.prompt);
+      try {
+        const softened = await callVideoApi(req, abortSignal, {
+          providerId: currentProviderId,
+          modelId: currentModelId,
+          prompt: softenedPrompt,
+        });
+        await recordMediaExperience({
+          kind: 'video',
+          providerId: currentProviderId,
+          modelId: currentModelId,
+          success: true,
+          strategy: 'soften_prompt',
+        });
+        return softened;
+      } catch (softenError) {
+        await recordMediaExperience({
+          kind: 'video',
+          providerId: currentProviderId,
+          modelId: currentModelId,
+          success: false,
+          errorCode: getErrorCode(softenError),
+          strategy: 'soften_prompt',
+        });
+      }
+    }
+
+    const configuredProviders = getConfiguredVideoProviderIds();
+    const fallbackProviderId = await suggestFallbackVideoProvider({
+      currentProviderId,
+      configuredProviderIds: configuredProviders,
+      lookback: 120,
+    });
+
+    if (fallbackProviderId && fallbackProviderId !== currentProviderId) {
+      const fallbackModelId = VIDEO_PROVIDERS[fallbackProviderId]?.models?.[0]?.id;
+      try {
+        const fallbackResult = await callVideoApi(req, abortSignal, {
+          providerId: fallbackProviderId,
+          modelId: fallbackModelId,
+        });
+        await recordMediaExperience({
+          kind: 'video',
+          providerId: fallbackProviderId,
+          modelId: fallbackModelId,
+          success: true,
+          strategy: 'fallback_provider',
+        });
+        return fallbackResult;
+      } catch (fallbackError) {
+        await recordMediaExperience({
+          kind: 'video',
+          providerId: fallbackProviderId,
+          modelId: fallbackModelId,
+          success: false,
+          errorCode: getErrorCode(fallbackError),
+          strategy: 'fallback_provider',
+        });
+      }
+    }
+
+    throw error;
+  }
+}
+
+async function fetchAsBlob(url: string, abortSignal?: AbortSignal): Promise<Blob> {
   // For data URLs, convert directly
   if (url.startsWith('data:')) {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: abortSignal });
     return res.blob();
   }
   // For remote URLs, proxy through our server to bypass CORS restrictions
@@ -272,6 +517,7 @@ async function fetchAsBlob(url: string): Promise<Blob> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
+      signal: abortSignal,
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -280,7 +526,7 @@ async function fetchAsBlob(url: string): Promise<Blob> {
     return res.blob();
   }
   // Relative URLs (shouldn't happen, but handle gracefully)
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: abortSignal });
   if (!res.ok) throw new Error(`Failed to fetch blob: ${res.status}`);
   return res.blob();
 }

@@ -36,7 +36,7 @@ def run_worker() -> None:
 
     print(f"[gateway-worker] started, queues={queue_order}, backend={queue_backend}")
 
-    if settings.purge_prestart_jobs_on_startup:
+    if settings.startup_purge_enabled:
         with session_scope() as startup_session:
             purged = purge_prestart_nonterminal_jobs(
                 startup_session,
@@ -57,6 +57,11 @@ def run_worker() -> None:
                 purged_messages = int(purge_method(queue_targets) or 0)
                 if purged_messages:
                     print(f"[gateway-worker] purged {purged_messages} queued message(s) on startup")
+    elif settings.purge_prestart_jobs_on_startup and not settings.startup_purge_armed:
+        print(
+            "[gateway-worker] startup purge is requested but skipped because "
+            "GATEWAY_STARTUP_PURGE_ARMED is not enabled"
+        )
 
     generation_timeout_sec = max(60, int(os.getenv("ANOTHERME2_GENERATION_TIMEOUT_SEC", "1800")))
     effective_stale_seconds = max(settings.running_job_stale_seconds, generation_timeout_sec + 120)

@@ -20,15 +20,15 @@ langchain_core_module.messages = langchain_core_messages
 sys.modules.setdefault("langchain_core", langchain_core_module)
 sys.modules.setdefault("langchain_core.messages", langchain_core_messages)
 
-from agents.codegen import TemplateCodeGenerator
-from agents.error_classifier import classify_render_error
-from agents.formal_video_validator import FormalVideoValidator
-from agents.animation_agent import AnimationAgent
-from agents.animation_planner import AnimationPlanner
-from agents.merge_agent import MergeAgent
-from agents.script_agent import ScriptAgent
-from agents.state import ScriptStep, VideoProject
-from agents.template_retriever import TemplateRetriever
+from agents.execution.codegen import TemplateCodeGenerator
+from agents.execution.error_classifier import classify_render_error
+from agents.execution.formal_video_validator import FormalVideoValidator
+from agents.execution.animation_agent import AnimationAgent
+from agents.planning.animation_planner import AnimationPlanner
+from agents.execution.merge_agent import MergeAgent
+from agents.planning.script_agent import ScriptAgent
+from agents.foundation.state import ScriptStep, VideoProject
+from agents.planning.template_retriever import TemplateRetriever
 
 
 def _canvas_config():
@@ -206,6 +206,52 @@ class ManimStabilityTests(unittest.TestCase):
         )
         self.assertIn("CM", explicit_segments)
 
+    def test_script_agent_postprocess_drops_leading_review_steps(self) -> None:
+        agent = ScriptAgent(config={}, llm=None)
+        steps = [
+            ScriptStep(
+                id=1,
+                title="前置知识复习",
+                duration=3.0,
+                narration="先回顾菱形和三角函数定义。",
+                visual_cues=[],
+            ),
+            ScriptStep(
+                id=2,
+                title="读题并整理已知",
+                duration=4.0,
+                narration="根据题目先标出已知和所求。",
+                visual_cues=[],
+            ),
+        ]
+
+        processed = agent._postprocess_script_steps(steps)
+        self.assertEqual(1, len(processed))
+        self.assertEqual("读题并整理已知", processed[0].title)
+        self.assertEqual(1, processed[0].id)
+
+    def test_script_agent_postprocess_enriches_brief_narration(self) -> None:
+        agent = ScriptAgent(config={}, llm=None)
+        steps = [
+            ScriptStep(
+                id=1,
+                title="计算关系",
+                duration=3.0,
+                narration="求出长度。",
+                visual_cues=[],
+            ),
+        ]
+
+        processed = agent._postprocess_script_steps(steps)
+        narration = processed[0].narration
+        self.assertIn("已知条件", narration)
+        self.assertIn("逐步推导", narration)
+        self.assertTrue("结论" in narration or "得到" in narration)
+
+    def test_codegen_clean_display_text_preserves_si_lu(self) -> None:
+        generator = TemplateCodeGenerator(_canvas_config())
+        self.assertEqual(generator._clean_display_text("思路：根据折叠性质"), "思路：根据折叠性质")
+
     def test_animation_planner_prioritizes_spoken_formulas(self) -> None:
         planner = AnimationPlanner()
         step = ScriptStep(
@@ -223,6 +269,47 @@ class ManimStabilityTests(unittest.TestCase):
         plan = planner.plan_step(step, step_scene, time_offset=0.0)
         self.assertIn("AB = BC", plan["formula_items"])
         self.assertIn("AB \\parallel CD", plan["formula_items"])
+
+    def test_animation_planner_adds_explanatory_copy_for_formula_only_step(self) -> None:
+        planner = AnimationPlanner()
+        step = ScriptStep(
+            id=1,
+            title="计算 EB",
+            duration=2.0,
+            narration="结合折叠对应关系计算线段 EB。",
+            visual_cues=[],
+            spoken_formulas=["EB = 5 - \\sqrt{5}"],
+            audio_duration=2.0,
+        )
+        step_scene = {"operations": [], "focus_entities": []}
+
+        plan = planner.plan_step(step, step_scene, time_offset=0.0)
+        self.assertIn("EB = 5 - \\sqrt{5}", plan["formula_items"])
+        self.assertTrue(
+            any(
+                item.startswith("要点：") or item.startswith("思路：")
+                for item in plan["formula_items"]
+            )
+        )
+
+    def test_animation_planner_filters_ambiguous_single_letter_formula(self) -> None:
+        planner = AnimationPlanner()
+        step = ScriptStep(
+            id=2,
+            title="三角函数",
+            duration=2.0,
+            narration="由 tanB=2 推导后续关系。",
+            visual_cues=[],
+            spoken_formulas=["tan B = 2", "B = 2", "tanB=2"],
+            audio_duration=2.0,
+        )
+        step_scene = {"operations": [], "focus_entities": []}
+
+        plan = planner.plan_step(step, step_scene, time_offset=0.0)
+        formulas = plan["formula_items"]
+        self.assertIn("tan B = 2", formulas)
+        self.assertNotIn("B = 2", formulas)
+        self.assertEqual(1, sum(1 for item in formulas if item.replace(" ", "").lower() == "tanb=2"))
 
     def test_prepare_animation_context_generates_fold_movement_from_coordinate_scene(self) -> None:
         agent = AnimationAgent(

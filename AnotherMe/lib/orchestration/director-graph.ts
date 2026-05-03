@@ -38,6 +38,8 @@ import { getEffectiveActions } from './tool-schemas';
 import type { AgentTurnSummary, WhiteboardActionRecord } from './director-prompt';
 import { parseStructuredChunk, createParserState, finalizeParser } from './stateless-generate';
 import { createLogger } from '@/lib/logger';
+import { globalStreamBus } from './stream-bus';
+import { createTraceEvent } from '@/lib/types/teaching-trace';
 
 const log = createLogger('DirectorGraph');
 
@@ -58,6 +60,7 @@ const OrchestratorState = Annotation.Root({
   triggerAgentId: Annotation<string | null>,
   systemPromptAddendum: Annotation<string | null>,
   userProfile: Annotation<{ nickname?: string; bio?: string } | null>,
+  learningContext: Annotation<StatelessChatRequest['learningContext'] | null>,
   /** Request-scoped agent configs for generated agents (not in the default registry) */
   agentConfigOverrides: Annotation<Record<string, AgentConfig>>,
 
@@ -290,6 +293,7 @@ async function runAgentGeneration(
     state.userProfile || undefined,
     state.agentResponses,
     state.systemPromptAddendum || undefined,
+    state.learningContext || undefined,
   );
   const openaiMessages = convertMessagesToOpenAI(state.messages, agentId);
   const adapter = new AISdkLangGraphAdapter(state.languageModel, state.thinkingConfig ?? undefined);
@@ -456,6 +460,20 @@ async function agentGenerateNode(
     );
   }
 
+  globalStreamBus.publish(
+    createTraceEvent(
+      'agent_response',
+      `req-${state.messages.length}-${agentId}`,
+      {
+        agentId,
+        responseLength: result.contentPreview.length,
+        textChunks: result.contentPreview.length > 0 ? 1 : 0,
+        actionCount: result.actionCount,
+      },
+      { stage: 'agent_invoke' },
+    ),
+  );
+
   return {
     turnCount: state.turnCount + 1,
     totalActions: state.totalActions + result.actionCount,
@@ -541,6 +559,7 @@ export function buildInitialState(
     triggerAgentId: request.config.triggerAgentId || null,
     systemPromptAddendum: request.config.systemPromptAddendum?.trim() || null,
     userProfile: request.userProfile || null,
+    learningContext: request.learningContext || null,
     agentConfigOverrides,
     currentAgentId: null,
     turnCount,

@@ -3,7 +3,10 @@
     "you": "你",
     "confirm": "确定",
     "cancel": "取消",
-    "loading": "加载中..."
+    "loading": "加载中...",
+    "close": "关闭",
+    "copy": "复制",
+    "copied": "已复制"
   },
   "home": {
     "slogan": "Generative Learning in Multi-Agent Interactive Classroom",
@@ -46,6 +49,15 @@
     "unknown": "未知",
     "stopDiscussion": "结束讨论",
     "endQA": "结束问答",
+    "howCanIHelp": "今天想学什么？",
+    "welcomeTitle": "今天想学什么？",
+    "welcomeSubtitle": "有任何问题都可以问我，我会帮你理解。",
+    "attach": "附件",
+    "attachFiles": "添加附件",
+    "reference": "引用",
+    "history": "历史",
+    "stopGenerating": "停止生成",
+    "send": "发送",
     "tabs": {
       "lecture": "笔记",
       "chat": "对话"
@@ -69,6 +81,28 @@
       "qa": "Q&A",
       "discussion": "讨论",
       "lecture": "授课"
+    },
+    "regenerate": "重新生成",
+    "trace": {
+      "title": "工具执行轨迹",
+      "thought": "思考",
+      "tool": "工具调用",
+      "observe": "观察",
+      "executing": "执行中",
+      "waiting": "等待中",
+      "executionFailed": "执行失败"
+    },
+    "visualization": {
+      "chartError": "图表加载失败",
+      "svgError": "SVG 加载失败",
+      "mermaidError": "Mermaid 图表加载失败",
+      "fullscreen": "全屏",
+      "showCode": "显示代码",
+      "hideCode": "隐藏代码",
+      "copyCode": "复制代码",
+      "copied": "已复制",
+      "close": "关闭",
+      "review": "审核"
     }
   },
   "actions": {

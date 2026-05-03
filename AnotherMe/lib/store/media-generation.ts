@@ -42,6 +42,7 @@ interface MediaGenerationState {
   enqueueTasks: (stageId: string, requests: MediaGenerationRequest[]) => void;
 
   // Status transitions
+  markPending: (elementId: string) => void;
   markGenerating: (elementId: string) => void;
   markDone: (elementId: string, objectUrl: string, poster?: string) => void;
   markFailed: (elementId: string, error: string, errorCode?: string) => void;
@@ -95,6 +96,23 @@ export const useMediaGenerationStore = create<MediaGenerationState>()((set, get)
       set((s) => ({ tasks: { ...s.tasks, ...newTasks } }));
     }
   },
+
+  markPending: (elementId) =>
+    set((s) => {
+      const task = s.tasks[elementId];
+      if (!task) return s;
+      return {
+        tasks: {
+          ...s.tasks,
+          [elementId]: {
+            ...task,
+            status: 'pending',
+            error: undefined,
+            errorCode: undefined,
+          },
+        },
+      };
+    }),
 
   markGenerating: (elementId) =>
     set((s) => {

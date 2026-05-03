@@ -33,17 +33,19 @@ export function resolveModel(params: {
   const { providerId, modelId } = parseModelString(modelString);
 
   const clientBaseUrl = params.baseUrl || undefined;
-  if (clientBaseUrl && process.env.NODE_ENV === 'production') {
+  // Always validate SSRF in production; skip only in explicit dev mode
+  // when ALLOW_LOCAL_NETWORKS is set (for local API gateway testing).
+  const allowLocalNetworks = process.env.ALLOW_LOCAL_NETWORKS === 'true' || process.env.ALLOW_LOCAL_NETWORKS === '1';
+  const isDev = process.env.NODE_ENV === 'development';
+  if (clientBaseUrl && !(isDev && allowLocalNetworks)) {
     const ssrfError = validateUrlForSSRF(clientBaseUrl);
     if (ssrfError) {
       throw new Error(ssrfError);
     }
   }
 
-  const apiKey = clientBaseUrl
-    ? params.apiKey || ''
-    : resolveApiKey(providerId, params.apiKey || '');
-  const baseUrl = clientBaseUrl ? clientBaseUrl : resolveBaseUrl(providerId, params.baseUrl);
+  const apiKey = resolveApiKey(providerId, params.apiKey || '');
+  const baseUrl = resolveBaseUrl(providerId, params.baseUrl);
   const proxy = resolveProxy(providerId);
   const { model, modelInfo } = getModel({
     providerId,

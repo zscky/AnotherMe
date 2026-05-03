@@ -1,6 +1,9 @@
 # IDE / editor
 .vscode/
 .idea/
+.claude/
+.workbuddy/
+*.local.md
 
 # env
 .env
@@ -19,15 +22,33 @@ node_modules/
 .next/
 dist/
 build/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+*.tsbuildinfo
 
 # runtime
 .runtime/
 %SystemDrive%/
 OpenMAIC/%SystemDrive%/
+gateway_data/
+AnotherMe/data/
+AnotherMe/logs/
+AnotherMe/.workbuddy/
+AnotherMe/.next/
+AnotherMe/.vercel/
 
 # generated artifacts
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
 media/videos/
 media/texts/
+AnotherMe/public/generated/
 OpenMAIC/anotherme2_engine/output/
 OpenMAIC/anotherme2_engine/output_problem*/
 OpenMAIC/anotherme2_engine/generated_outputs/
@@ -40,3 +61,15 @@ OpenMAIC/anotherme2_engine/.copilot_review/
 OpenMAIC/anotherme2_engine/diff_output.txt
 OpenMAIC/anotherme2_engine/OpenMAIC/
 OpenMAIC/anotherme2_engine/.cache/
+
+# local diagnostics / scratch output
+diff.txt
+**/diff_output.txt
+**/staged_diff.txt
+**/unstaged_diff.txt
+**/tsc_output.txt
+**/tsc_all_output.txt
+**/full_check.txt
+
+# reference checkout, not part of AnotherMe runtime
+DeepTutor/

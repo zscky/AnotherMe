@@ -3,12 +3,13 @@ import os
 import json
 
 # Ensure we are in the correct directory
-os.chdir('d:/AnotherMe-V3/OpenMAIC/anotherme2_engine')
+current_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(current_dir)
 sys.path.append('.')
 
-from agents.vision_agent import VisionAgent
-from agents.geometry_fact_compiler import GeometryFactCompiler
-from agents.coordinate_scene import CoordinateSceneCompiler
+from agents.perception.vision_agent import VisionAgent
+from agents.perception.geometry_fact_compiler import GeometryFactCompiler
+from agents.perception.coordinate_scene import CoordinateSceneCompiler
 
 def reproduce():
     # raw_bundle

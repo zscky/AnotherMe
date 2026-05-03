@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { RegisterForm } from '@/components/auth/register-form';
+import { RegisterForm } from '@/features/auth/components/register-form';
 import { getAuthenticatedUserFromCookieStore } from '@/lib/auth/session';
 
 export const runtime = 'nodejs';

@@ -8,8 +8,8 @@
  * Headers:
  *   x-image-provider: ImageProviderId
  *   x-image-model: string (optional)
- *   x-api-key: string (optional, server fallback)
- *   x-base-url: string (optional, server fallback)
+ *   x-api-key: string (optional, user fallback after server config)
+ *   x-base-url: string (optional, user fallback after server config)
  *
  * Response: { success: boolean, message: string }
  */
@@ -38,10 +38,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const apiKey = clientBaseUrl
-      ? clientApiKey || ''
-      : resolveImageApiKey(providerId, clientApiKey);
-    const baseUrl = clientBaseUrl ? clientBaseUrl : resolveImageBaseUrl(providerId, clientBaseUrl);
+    const apiKey = resolveImageApiKey(providerId, clientApiKey);
+    const baseUrl = resolveImageBaseUrl(providerId, clientBaseUrl);
 
     if (!apiKey) {
       return apiError('MISSING_API_KEY', 400, 'No API key configured');

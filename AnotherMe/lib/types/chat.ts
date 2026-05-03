@@ -23,6 +23,19 @@ export interface ChatMessageMetadata {
   agentColor?: string;
   createdAt?: number;
   interrupted?: boolean;
+  /** Stream events for tool execution visualization */
+  events?: StreamEvent[];
+}
+
+/**
+ * Stream event for tool execution visualization
+ */
+export interface StreamEvent {
+  type: 'thinking' | 'observation' | 'content' | 'progress' | 'tool_call' | 'tool_result' | 'error' | 'result';
+  stage: string;
+  content: string;
+  timestamp: number;
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -218,6 +231,8 @@ export interface LectureNoteEntry {
 
 import type { Stage, Scene, StageMode } from '@/lib/types/stage';
 import type { AgentTurnSummary, WhiteboardActionRecord } from '@/lib/orchestration/director-prompt';
+import type { LearningContext } from '@/lib/types/learning-context';
+import type { TutorToolName, TutorToolConfig } from '@/lib/types/tutor-tools';
 
 /**
  * Accumulated director state passed between per-agent requests.
@@ -269,6 +284,17 @@ export interface StatelessChatRequest {
       isGenerated?: boolean;
       boundStageId?: string;
     }>;
+    /** 启用的AI导师工具列表 */
+    enabledTutorTools?: TutorToolName[];
+    /** AI导师工具配置 */
+    tutorToolConfig?: TutorToolConfig;
+    /**
+     * P2: 是否使用 Agentic Pipeline 模式
+     * - true: 使用 thinking -> acting -> observing -> responding 四阶段，模型按需选择工具
+     * - false: 预执行所有启用的工具（legacy 模式）
+     * @default false (保持向后兼容)
+     */
+    useAgenticPipeline?: boolean;
   };
   /** Accumulated director state from previous per-agent requests */
   directorState?: DirectorState;
@@ -277,6 +303,8 @@ export interface StatelessChatRequest {
     nickname?: string;
     bio?: string;
   };
+  /** Unified learning context for profile-aware tutoring and traceability. */
+  learningContext?: LearningContext;
   /** OpenAI-compatible API credentials */
   apiKey: string;
   baseUrl?: string;
@@ -294,6 +322,17 @@ export interface StatelessChatRequest {
     linkedConversationId?: string;
     latestUserMessageId?: string;
   };
+  /**
+   * AI导师功能类型（v3.3+）
+   * - 'chat': 灵活对话（使用工具）
+   * - 'deep_solve': 多步推理求解
+   * - 'quiz': 测验生成和练习
+   * - 'research': 深度研究（多源检索）
+   * - 'math_animator': 数学动画生成
+   * - 'visualize': 可视化生成（SVG/Chart.js/Mermaid）
+   * @default 'chat'
+   */
+  capability?: 'chat' | 'deep_solve' | 'quiz' | 'research' | 'math_animator' | 'visualize';
 }
 
 /**
@@ -348,4 +387,12 @@ export type StatelessEvent =
         directorState?: DirectorState;
       };
     }
-  | { type: 'error'; data: { message: string } };
+  | { type: 'error'; data: { message: string } }
+  | {
+      type: 'tool_start';
+      data: { toolName: string; toolId: string };
+    }
+  | {
+      type: 'tool_end';
+      data: { toolName: string; toolId: string; success: boolean; output?: string; error?: string };
+    };

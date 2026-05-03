@@ -23,12 +23,19 @@ import type {
   VideoGenerationOptions,
   VideoGenerationResult,
 } from '../types';
+import { runAsyncTaskWithPolling } from './async-task-runner';
 
 const DEFAULT_MODEL = 'kling-v2-6';
 const DEFAULT_BASE_URL = 'https://api-beijing.klingai.com';
-const POLL_INTERVAL_MS = 5_000;
-const MAX_POLL_ATTEMPTS = 120; // 10 minutes max
+const POLL_MAX_INTERVAL_MS = 5_000;
+const POLL_INITIAL_INTERVAL_MS = 1_000;
+const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const JWT_EXPIRY_SECS = 1800; // 30 minutes
+
+function getPollDelayMs(attempt: number): number {
+  const exponentialDelay = POLL_INITIAL_INTERVAL_MS * Math.pow(2, attempt);
+  return Math.min(POLL_MAX_INTERVAL_MS, exponentialDelay);
+}
 
 // ---------------------------------------------------------------------------
 // JWT helper (HS256, no external deps)
@@ -238,11 +245,18 @@ export async function generateWithKling(
   const taskId = await submitTask(baseUrl, token, model, options);
 
   // 2. Poll until done
-  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    const result = await pollTask(baseUrl, token, taskId);
-
-    if (result.task_status === 'succeed') {
+  return runAsyncTaskWithPolling<KlingPollResponse['data'], VideoGenerationResult>({
+    taskLabel: `Kling video generation (task=${taskId})`,
+    timeoutMs: POLL_TIMEOUT_MS,
+    getPollDelayMs,
+    poll: async () => pollTask(baseUrl, token, taskId),
+    isSucceeded: (result) => result.task_status === 'succeed',
+    isFailed: (result) => result.task_status === 'failed',
+    getFailureMessage: (result) =>
+      `Kling video generation failed: ${result.task_status_msg || 'Unknown error'}`,
+    getTimeoutMessage: () =>
+      `Kling video generation timed out after ${Math.floor(POLL_TIMEOUT_MS / 1000)}s (task: ${taskId})`,
+    mapResult: (result) => {
       const video = result.task_result?.videos?.[0];
       if (!video?.url) {
         throw new Error('Kling task succeeded but no video URL returned');
@@ -254,16 +268,6 @@ export async function generateWithKling(
         width,
         height,
       };
-    }
-
-    if (result.task_status === 'failed') {
-      throw new Error(
-        `Kling video generation failed: ${result.task_status_msg || 'Unknown error'}`,
-      );
-    }
-  }
-
-  throw new Error(
-    `Kling video generation timed out after ${(MAX_POLL_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s (task: ${taskId})`,
-  );
+    },
+  });
 }

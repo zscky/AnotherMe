@@ -18,12 +18,18 @@ from .chat_service import (
     create_ai_message,
     create_ai_session,
     create_conversation,
+    create_learning_event,
     create_message,
+    delete_conversation,
+    get_learning_event_stats,
+    get_student_profile_snapshot,
     is_conversation_member,
     list_ai_messages,
     list_ai_sessions,
     list_conversation_members,
     list_conversations,
+    list_learning_events,
+    list_learning_records,
     list_messages,
     mark_conversation_read,
     remove_conversation_member,
@@ -31,8 +37,22 @@ from .chat_service import (
     serialize_ai_message,
     serialize_ai_session,
     serialize_conversation,
+    serialize_learning_event,
     serialize_message,
     upsert_ai_feedback,
+)
+from .knowledge_tracing_service import (
+    generate_diagnostic_probe,
+    get_agent_kt_context,
+    get_knowledge_state_for_point,
+    get_question_knowledge_mappings,
+    get_student_knowledge_states,
+    get_teaching_decision_for_point,
+    get_teaching_decisions,
+    list_knowledge_points,
+    process_quiz_answer,
+    set_question_knowledge_mapping,
+    upsert_knowledge_point,
 )
 from .config import Settings, get_settings
 from .db import get_db, init_db, reconfigure_db
@@ -42,7 +62,8 @@ from .job_service import (
     reconcile_single_running_problem_video_job_with_artifacts,
     serialize_job,
 )
-from .models import Conversation, Job
+from agents.foundation.capability_registry import CapabilityRegistry, create_default_registry
+from .models import Conversation, Job, LiveBookJob, LiveBookJobEvent
 from .queueing import QueueMessage, build_queue_client
 from .schemas import (
     AddConversationMembersRequest,
@@ -57,14 +78,31 @@ from .schemas import (
     CreateAIChatSessionRequest,
     CreateConversationRequest,
     CreateJobRequest,
+    CreateLearningEventRequest,
     CreateMessageRequest,
     JobResultResponse,
     JobStatus,
     JobSummary,
+    KnowledgePointInput,
+    KnowledgePointOutput,
+    LearningEventOutput,
+    LearningEventStatsOutput,
+    LearningRecordOutput,
     MarkConversationReadRequest,
     MessageOutput,
+    DiagnosticProbeInput,
+    DiagnosticProbeOutput,
+    ProcessQuizAnswerInput,
+    QuestionKnowledgeMapInput,
+    QuestionKnowledgeMapOutput,
+    QuizAnswerResultOutput,
     RemoveConversationMemberRequest,
     RemoveConversationMemberResponse,
+    KnowledgeTracingSummaryOutput,
+    StudentKnowledgeContextOutput,
+    StudentKnowledgeStateOutput,
+    StudentProfileOutput,
+    TeachingDecisionOutput,
     UploadResponse,
 )
 from .storage import ObjectStorage, build_storage, guess_content_type
@@ -309,6 +347,28 @@ def create_app(
     queue_client = queue_client_override or build_queue_client(settings)
     storage = storage_override or build_storage(settings)
     conversation_hub = ConversationSocketHub()
+    capability_registry = create_default_registry()
+
+    def _check_capability(capability_id: str) -> None:
+        """Check if a capability is available; raise HTTPException if not."""
+        if not capability_registry.is_capability_available(capability_id):
+            capability = capability_registry.get_capability(capability_id)
+            missing_tools = [
+                tool_id
+                for tool_id in (capability.required_tools if capability else [])
+                if not capability_registry.get_tool(tool_id) or not capability_registry.get_tool(tool_id).available
+            ]
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error_code": "CAPABILITY_UNAVAILABLE",
+                    "message": f"Capability '{capability_id}' is not available",
+                    "capability_id": capability_id,
+                    "missing_tools": missing_tools,
+                    "degraded": capability.enabled if capability else False,
+                },
+            )
+
     event_bus = ConversationEventBus(settings.redis_url, conversation_hub)
 
     @app.on_event("startup")
@@ -317,7 +377,7 @@ def create_app(
         reconfigure_db(settings.database_url)
         init_db()
 
-        if settings.purge_prestart_jobs_on_startup:
+        if settings.startup_purge_enabled:
             startup_db = db_module.SessionLocal()
             try:
                 purged = purge_prestart_nonterminal_jobs(
@@ -345,6 +405,11 @@ def create_app(
                     purged_messages = int(purge_method(queue_targets) or 0)
                     if purged_messages:
                         print(f"[gateway-app] purged {purged_messages} queued message(s) on startup")
+        elif settings.purge_prestart_jobs_on_startup and not settings.startup_purge_armed:
+            print(
+                "[gateway-app] startup purge is requested but skipped because "
+                "GATEWAY_STARTUP_PURGE_ARMED is not enabled"
+            )
         await event_bus.start()
 
     @app.on_event("shutdown")
@@ -408,6 +473,15 @@ def create_app(
         authorization: str | None = Header(default=None),
     ):
         _require_token(settings, authorization)
+        capability_map = {
+            "course_generate": "course_generate",
+            "problem_video_generate": "problem_video_generate",
+            "study_package_generate": "course_generate",
+            "learning_record_extract": "ai_tutor_chat",
+        }
+        capability_id = capability_map.get(request.job_type)
+        if capability_id:
+            _check_capability(capability_id)
         try:
             job, created = create_or_get_job(db, request, settings)
             db.commit()
@@ -464,6 +538,38 @@ def create_app(
 
         return JobResultResponse(job_id=job.id, status=JobStatus(job.status), result=job.result_payload or {})
 
+    @app.get("/v1/jobs/{job_id}/trace-events")
+    def get_job_trace_events(
+        job_id: str,
+        event_type: str | None = Query(default=None),
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        job = db.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail={"error_code": "JOB_NOT_FOUND", "message": "Job not found"})
+
+        query = db.query(JobEvent).filter(JobEvent.job_id == job_id)
+        if event_type:
+            query = query.filter(JobEvent.trace_event_type == event_type)
+        else:
+            query = query.filter(JobEvent.trace_event_type.isnot(None))
+
+        events = query.order_by(JobEvent.created_at.asc()).all()
+        return [
+            {
+                "id": e.trace_event_id,
+                "type": e.trace_event_type,
+                "event_type": e.event_type,
+                "message": e.message,
+                "payload": e.payload,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in events
+            if e.trace_event_type is not None
+        ]
+
     @app.get("/v1/messages/conversations", response_model=list[ConversationSummary])
     def get_conversations(
         user_id: str = Query(..., min_length=1),
@@ -498,6 +604,22 @@ def create_app(
             .first()
         )
         return ConversationSummary(**serialize_conversation(row, unread_count=0))
+
+    @app.delete("/v1/messages/conversations/{conversation_id}")
+    def delete_conversation_api(
+        conversation_id: str,
+        request: RemoveConversationMemberRequest,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        result = delete_conversation(
+            db,
+            conversation_id=conversation_id,
+            operator_user_id=request.operator_user_id,
+        )
+        db.commit()
+        return result
 
     @app.get("/v1/messages/{conversation_id}/messages", response_model=list[MessageOutput])
     def get_messages(
@@ -665,6 +787,72 @@ def create_app(
         finally:
             await conversation_hub.disconnect(conversation_id, user_id, websocket)
 
+    @app.websocket("/api/live-book/ws")
+    async def live_book_ws(
+        websocket: WebSocket,
+        book_id: str = Query(..., min_length=1),
+    ):
+        """WebSocket stream for live-book job events.
+
+        The Next.js app exposes SSE endpoints for serverless compatibility; the
+        gateway exposes the strict WS contract for runtimes that support socket
+        upgrades.
+        """
+
+        session_factory = db_module.SessionLocal
+        if session_factory is None:
+            await websocket.close(code=1011)
+            return
+
+        await websocket.accept()
+
+        def serialize_event(event: LiveBookJobEvent) -> dict:
+            return {
+                "id": event.id,
+                "type": event.type,
+                "stage": event.stage,
+                "message": event.message,
+                "progress": event.progress,
+                "timestamp": event.created_at.isoformat(),
+                "metadata": event.event_metadata or {},
+            }
+
+        last_event_created_at = None
+        try:
+            await websocket.send_json({"type": "connected", "book_id": book_id})
+            while True:
+                db_session = session_factory()
+                try:
+                    job = (
+                        db_session.query(LiveBookJob)
+                        .filter(LiveBookJob.book_id == book_id)
+                        .order_by(LiveBookJob.created_at.desc())
+                        .first()
+                    )
+                    if job is not None:
+                        query = (
+                            db_session.query(LiveBookJobEvent)
+                            .filter(LiveBookJobEvent.job_id == job.id)
+                            .order_by(LiveBookJobEvent.created_at.asc())
+                        )
+                        if last_event_created_at is not None:
+                            query = query.filter(LiveBookJobEvent.created_at > last_event_created_at)
+                        events = query.all()
+                        for event in events:
+                            await websocket.send_json(serialize_event(event))
+                            last_event_created_at = event.created_at
+                finally:
+                    db_session.close()
+
+                try:
+                    message = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                    if message.strip().lower() == "ping":
+                        await websocket.send_json({"type": "pong", "book_id": book_id})
+                except asyncio.TimeoutError:
+                    continue
+        except WebSocketDisconnect:
+            pass
+
     @app.post("/v1/messages/{conversation_id}/read", response_model=ConversationReadResponse)
     def mark_read_api(
         conversation_id: str,
@@ -730,6 +918,23 @@ def create_app(
         rows = list_ai_messages(db, session_id=session_id, limit=limit)
         return [AIChatMessageOutput(**row) for row in rows]
 
+    @app.get("/v1/ai/sessions/{session_id}/learning-records", response_model=list[LearningRecordOutput])
+    def get_ai_learning_records(
+        session_id: str,
+        user_id: str | None = Query(default=None, min_length=1),
+        limit: int = Query(200, ge=1, le=500),
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        rows = list_learning_records(
+            db,
+            session_id=session_id,
+            user_id=user_id,
+            limit=limit,
+        )
+        return [LearningRecordOutput(**row) for row in rows]
+
     @app.post("/v1/ai/sessions/{session_id}/messages", response_model=AIChatMessageOutput)
     def create_ai_message_api(
         session_id: str,
@@ -756,6 +961,21 @@ def create_app(
         db.commit()
         return AIChatMessageOutput(**serialize_ai_message(row))
 
+    @app.get("/v1/students/{user_id}/profile", response_model=StudentProfileOutput)
+    def get_student_profile_api(
+        user_id: str,
+        lookback_days: int = Query(120, ge=14, le=365),
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        row = get_student_profile_snapshot(
+            db,
+            user_id=user_id,
+            lookback_days=lookback_days,
+        )
+        return StudentProfileOutput(**row)
+
     @app.post("/v1/ai/messages/{message_id}/feedback", response_model=AIMessageFeedbackOutput)
     def upsert_ai_feedback_api(
         message_id: str,
@@ -773,6 +993,410 @@ def create_app(
         )
         db.commit()
         return AIMessageFeedbackOutput(**serialize_ai_feedback(row))
+
+    @app.post("/v1/learning-events", response_model=LearningEventOutput)
+    def create_learning_event_api(
+        request: CreateLearningEventRequest,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        if not request.user_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "INVALID_REQUEST",
+                    "message": "user_id is required. Prefer POST /v1/users/{user_id}/learning-events.",
+                },
+            )
+        row = create_learning_event(
+            db,
+            user_id=request.user_id,
+            event_type=request.event_type,
+            session_id=request.session_id,
+            classroom_id=request.classroom_id,
+            scene_id=request.scene_id,
+            block_id=request.block_id,
+            knowledge_points=request.knowledge_points,
+            payload=request.payload,
+            weight=request.weight or 1.0,
+        )
+        db.commit()
+        db.refresh(row)
+        return LearningEventOutput(**serialize_learning_event(row))
+
+    @app.post("/v1/users/{user_id}/learning-events", response_model=LearningEventOutput)
+    def create_learning_event_for_user_api(
+        user_id: str,
+        request: CreateLearningEventRequest,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        row = create_learning_event(
+            db,
+            user_id=user_id,
+            event_type=request.event_type,
+            session_id=request.session_id,
+            classroom_id=request.classroom_id,
+            scene_id=request.scene_id,
+            block_id=request.block_id,
+            knowledge_points=request.knowledge_points,
+            payload=request.payload,
+            weight=request.weight or 1.0,
+        )
+        db.commit()
+        db.refresh(row)
+        return LearningEventOutput(**serialize_learning_event(row))
+
+    @app.get("/v1/users/{user_id}/learning-events", response_model=list[LearningEventOutput])
+    def get_user_learning_events_api(
+        user_id: str,
+        event_type: str | None = Query(default=None),
+        classroom_id: str | None = Query(default=None),
+        scene_id: str | None = Query(default=None),
+        limit: int = Query(200, ge=1, le=500),
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        rows = list_learning_events(
+            db,
+            user_id=user_id,
+            event_type=event_type,
+            classroom_id=classroom_id,
+            scene_id=scene_id,
+            limit=limit,
+        )
+        return [LearningEventOutput(**row) for row in rows]
+
+    @app.get("/v1/users/{user_id}/learning-events/stats", response_model=LearningEventStatsOutput)
+    def get_user_learning_event_stats_api(
+        user_id: str,
+        classroom_id: str | None = Query(default=None),
+        lookback_days: int = Query(30, ge=1, le=365),
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        stats = get_learning_event_stats(
+            db,
+            user_id=user_id,
+            classroom_id=classroom_id,
+            lookback_days=lookback_days,
+        )
+        return LearningEventStatsOutput(**stats)
+
+    @app.get("/v1/capabilities")
+    def get_capabilities(
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        status = capability_registry.get_capability_status()
+        effective = capability_registry.get_effective_capabilities()
+        return {
+            "capabilities": status,
+            "effective": [cap.to_dict() for cap in effective],
+            "tools": {
+                tool_id: tool.to_dict()
+                for tool_id, tool in capability_registry.tools.items()
+            },
+        }
+
+    @app.get("/v1/capabilities/{capability_id}")
+    def get_capability(
+        capability_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        capability = capability_registry.get_capability(capability_id)
+        if not capability:
+            raise HTTPException(status_code=404, detail={"error_code": "CAPABILITY_NOT_FOUND", "message": f"Capability '{capability_id}' not found"})
+        available = capability_registry.is_capability_available(capability_id)
+        return {
+            **capability.to_dict(),
+            "available": available,
+        }
+
+    @app.post("/v1/tools/{tool_id}/health")
+    def update_tool_health(
+        tool_id: str,
+        request: dict,
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        available = request.get("available", True)
+        error_message = request.get("error_message")
+        capability_registry.update_tool_availability(tool_id, available, error_message)
+
+        affected = capability_registry.get_capabilities_using_tool(tool_id)
+        return {
+            "tool_id": tool_id,
+            "available": available,
+            "affected_capabilities": [cap.id for cap in affected],
+        }
+
+    @app.post("/v1/jobs/{job_id}/capability-guard")
+    def check_job_capability_guard(
+        job_id: str,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        job = db.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail={"error_code": "JOB_NOT_FOUND", "message": "Job not found"})
+
+        capability_map = {
+            "course_generate": "course_generate",
+            "problem_video_generate": "problem_video_generate",
+            "study_package_generate": "course_generate",
+            "learning_record_extract": "ai_tutor_chat",
+        }
+        capability_id = capability_map.get(job.job_type)
+        if not capability_id:
+            return {"job_id": job_id, "job_type": job.job_type, "guard_result": "unknown_job_type"}
+
+        available = capability_registry.is_capability_available(capability_id)
+        capability = capability_registry.get_capability(capability_id)
+        missing_tools = [
+            tool_id
+            for tool_id in (capability.required_tools if capability else [])
+            if not capability_registry.get_tool(tool_id) or not capability_registry.get_tool(tool_id).available
+        ]
+
+        if not available:
+            return {
+                "job_id": job_id,
+                "job_type": job.job_type,
+                "guard_result": "blocked",
+                "capability_id": capability_id,
+                "missing_tools": missing_tools,
+                "degraded": capability.enabled if capability else False,
+            }
+
+        return {
+            "job_id": job_id,
+            "job_type": job.job_type,
+            "guard_result": "passed",
+            "capability_id": capability_id,
+        }
+
+    # ------------------------------------------------------------------
+    # Knowledge Tracing APIs
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/knowledge-points", response_model=list[KnowledgePointOutput])
+    def list_knowledge_points_api(
+        subject: str | None = Query(default=None),
+        parent_id: str | None = Query(default=None),
+        limit: int = Query(500, ge=1, le=1000),
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        rows = list_knowledge_points(session=db, subject=subject, parent_id=parent_id, limit=limit)
+        return [KnowledgePointOutput(**r) for r in rows]
+
+    @app.post("/v1/knowledge-points", response_model=KnowledgePointOutput)
+    def upsert_knowledge_point_api(
+        request: KnowledgePointInput,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        row = upsert_knowledge_point(
+            session=db,
+            kp_id=request.kp_id,
+            name=request.name,
+            subject=request.subject,
+            description=request.description,
+            parent_id=request.parent_id,
+            prerequisites=request.prerequisites,
+            difficulty=request.difficulty,
+        )
+        db.commit()
+        db.refresh(row)
+        return KnowledgePointOutput(
+            id=row.id,
+            subject=row.subject,
+            name=row.name,
+            description=row.description,
+            parent_id=row.parent_id,
+            prerequisites=row.prerequisites or [],
+            difficulty=row.difficulty,
+            created_at=row.created_at.isoformat() if row.created_at else None,
+        )
+
+    @app.post("/v1/question-knowledge-map", response_model=QuestionKnowledgeMapOutput)
+    def set_question_knowledge_map_api(
+        request: QuestionKnowledgeMapInput,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        row = set_question_knowledge_mapping(
+            session=db,
+            question_id=request.question_id,
+            knowledge_point_id=request.knowledge_point_id,
+            weight=request.weight,
+            difficulty=request.difficulty,
+        )
+        db.commit()
+        db.refresh(row)
+        return QuestionKnowledgeMapOutput(
+            question_id=row.question_id,
+            knowledge_point_id=row.knowledge_point_id,
+            weight=row.weight,
+            difficulty=row.difficulty,
+        )
+
+    @app.get("/v1/questions/{question_id}/knowledge-points", response_model=list[QuestionKnowledgeMapOutput])
+    def get_question_knowledge_map_api(
+        question_id: str,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        rows = get_question_knowledge_mappings(session=db, question_id=question_id)
+        return [QuestionKnowledgeMapOutput(**r) for r in rows]
+
+    @app.post("/v1/users/{user_id}/quiz-answers", response_model=list[QuizAnswerResultOutput])
+    def process_quiz_answer_api(
+        user_id: str,
+        request: ProcessQuizAnswerInput,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        results = process_quiz_answer(
+            session=db,
+            user_id=user_id,
+            question_id=request.question_id,
+            is_correct=request.is_correct,
+            knowledge_point_ids=request.knowledge_point_ids,
+            payload=request.payload,
+        )
+        db.commit()
+        return [QuizAnswerResultOutput(**r) for r in results]
+
+    @app.get("/v1/users/{user_id}/knowledge-states", response_model=list[StudentKnowledgeStateOutput])
+    def get_user_knowledge_states_api(
+        user_id: str,
+        knowledge_point_ids: list[str] | None = Query(default=None),
+        min_mastery: float | None = Query(default=None, ge=0.0, le=1.0),
+        limit: int = Query(200, ge=1, le=500),
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        rows = get_student_knowledge_states(
+            session=db,
+            user_id=user_id,
+            knowledge_point_ids=knowledge_point_ids,
+            min_mastery=min_mastery,
+            limit=limit,
+        )
+        return [StudentKnowledgeStateOutput(**r) for r in rows]
+
+    @app.get("/v1/users/{user_id}/knowledge-states/{knowledge_point_id}", response_model=StudentKnowledgeStateOutput)
+    def get_user_knowledge_state_for_point_api(
+        user_id: str,
+        knowledge_point_id: str,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        row = get_knowledge_state_for_point(session=db, user_id=user_id, knowledge_point_id=knowledge_point_id)
+        if not row:
+            raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND", "message": "Knowledge state not found"})
+        return StudentKnowledgeStateOutput(**row)
+
+    @app.get("/v1/users/{user_id}/teaching-decisions", response_model=list[TeachingDecisionOutput])
+    def get_user_teaching_decisions_api(
+        user_id: str,
+        knowledge_point_ids: list[str] | None = Query(default=None),
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        rows = get_teaching_decisions(session=db, user_id=user_id, knowledge_point_ids=knowledge_point_ids)
+        return [TeachingDecisionOutput(**r) for r in rows]
+
+    @app.get("/v1/users/{user_id}/teaching-decisions/{knowledge_point_id}", response_model=TeachingDecisionOutput)
+    def get_user_teaching_decision_for_point_api(
+        user_id: str,
+        knowledge_point_id: str,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        row = get_teaching_decision_for_point(session=db, user_id=user_id, knowledge_point_id=knowledge_point_id)
+        if not row:
+            raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND", "message": "Teaching decision not found"})
+        return TeachingDecisionOutput(**row)
+
+    @app.get("/v1/users/{user_id}/knowledge-context/{knowledge_point_id}", response_model=StudentKnowledgeContextOutput)
+    def get_user_knowledge_context_api(
+        user_id: str,
+        knowledge_point_id: str,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        context_text = get_agent_kt_context(session=db, user_id=user_id, knowledge_point_id=knowledge_point_id)
+        return StudentKnowledgeContextOutput(context_text=context_text)
+
+    @app.get("/v1/users/{user_id}/knowledge-tracing", response_model=KnowledgeTracingSummaryOutput)
+    def get_user_knowledge_tracing_api(
+        user_id: str,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        """Unified knowledge tracing endpoint: states + decisions + summary."""
+        _require_token(settings, authorization)
+        states = get_student_knowledge_states(session=db, user_id=user_id, limit=500)
+        decisions = get_teaching_decisions(session=db, user_id=user_id)
+
+        # Sort by mastery ascending to find the weakest point
+        weakest = None
+        if states:
+            sorted_states = sorted(states, key=lambda s: s["p_mastery"])
+            weakest = sorted_states[0]
+
+        mastered_count = sum(1 for s in states if s["p_mastery"] >= 0.85)
+        weak_count = sum(1 for s in states if s["p_mastery"] < 0.5)
+        review_count = sum(1 for s in states if 0.5 <= s["p_mastery"] < 0.85)
+
+        return KnowledgeTracingSummaryOutput(
+            user_id=user_id,
+            knowledge_states=[StudentKnowledgeStateOutput(**s) for s in states],
+            teaching_decisions=[TeachingDecisionOutput(**d) for d in decisions],
+            weakest_knowledge_point=StudentKnowledgeStateOutput(**weakest) if weakest else None,
+            summary={
+                "total_points": len(states),
+                "mastered_count": mastered_count,
+                "weak_count": weak_count,
+                "review_count": review_count,
+            },
+        )
+
+    @app.post("/v1/users/{user_id}/diagnostic-probes", response_model=DiagnosticProbeOutput)
+    def generate_diagnostic_probe_api(
+        user_id: str,
+        request: DiagnosticProbeInput,
+        db: Session = Depends(get_db),
+        authorization: str | None = Header(default=None),
+    ):
+        _require_token(settings, authorization)
+        result = generate_diagnostic_probe(
+            session=db,
+            user_id=user_id,
+            knowledge_point_id=request.knowledge_point_id,
+            difficulty=request.difficulty,
+            probe_type=request.probe_type,
+        )
+        return DiagnosticProbeOutput(**result)
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(_request, exc: HTTPException):

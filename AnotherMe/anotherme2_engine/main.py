@@ -12,15 +12,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from env_loader import load_project_env
 
-from agents.config import (
+from agents.foundation.config import (
     TEXT_API_KEY_ENV_NAME,
     VISION_API_KEY_ENV_NAME,
     build_default_llm_config,
     build_ocr_model_config,
     build_vision_model_config,
 )
-from agents.state import AgentState, VideoProject
-from agents.workflow import create_default_workflow
+from agents.foundation.state import AgentState, VideoProject
+from agents.orchestration.workflow import create_default_workflow
 try:
     from output_paths import DEFAULT_OUTPUT_DIR
 except ModuleNotFoundError:
@@ -48,6 +48,7 @@ class MathVideoGenerator:
         output_dir: str = str(DEFAULT_OUTPUT_DIR),
         geometry_file: Optional[str] = None,
         export_ggb: bool = True,
+        learner_memory: Optional[Dict[str, Any]] = None,
     ) -> str:
         self.workflow = create_default_workflow(
             llm_config=self.llm_config,
@@ -69,6 +70,7 @@ class MathVideoGenerator:
             "metadata": {
                 "geometry_file": geometry_file,
                 "export_ggb": export_ggb,
+                "learner_memory": learner_memory if isinstance(learner_memory, dict) else {},
             },
         }
 

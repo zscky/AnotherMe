@@ -3,7 +3,10 @@
     "you": "You",
     "confirm": "Confirm",
     "cancel": "Cancel",
-    "loading": "Loading..."
+    "loading": "Loading...",
+    "close": "Close",
+    "copy": "Copy",
+    "copied": "Copied"
   },
   "home": {
     "slogan": "Generative Learning in Multi-Agent Interactive Classroom",
@@ -46,6 +49,15 @@
     "unknown": "Unknown",
     "stopDiscussion": "Stop Discussion",
     "endQA": "End Q&A",
+    "howCanIHelp": "What would you like to learn today?",
+    "welcomeTitle": "What would you like to learn?",
+    "welcomeSubtitle": "Ask anything — I am here to help you understand.",
+    "attach": "Attach",
+    "attachFiles": "Attach files",
+    "reference": "Reference",
+    "history": "History",
+    "stopGenerating": "Stop generating",
+    "send": "Send",
     "tabs": {
       "lecture": "Notes",
       "chat": "Chat"
@@ -69,6 +81,28 @@
       "qa": "Q&A",
       "discussion": "DISC",
       "lecture": "LEC"
+    },
+    "regenerate": "Regenerate",
+    "trace": {
+      "title": "Tool Execution Trace",
+      "thought": "Thinking",
+      "tool": "Tool Call",
+      "observe": "Observation",
+      "executing": "Executing",
+      "waiting": "Waiting",
+      "executionFailed": "Execution Failed"
+    },
+    "visualization": {
+      "chartError": "Failed to load chart",
+      "svgError": "Failed to load SVG",
+      "mermaidError": "Failed to load Mermaid diagram",
+      "fullscreen": "Fullscreen",
+      "showCode": "Show Code",
+      "hideCode": "Hide Code",
+      "copyCode": "Copy Code",
+      "copied": "Copied",
+      "close": "Close",
+      "review": "Review"
     }
   },
   "actions": {

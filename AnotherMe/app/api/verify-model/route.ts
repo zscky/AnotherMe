@@ -36,10 +36,43 @@ export async function POST(req: NextRequest) {
     }
 
     // Send a minimal test message
-    const { text } = await generateText({
-      model: languageModel,
-      prompt: 'Say "OK" if you can hear me.',
-    });
+    let text: string;
+    try {
+      const result = await generateText({
+        model: languageModel,
+        prompt: 'Say "OK" if you can hear me.',
+      });
+      text = result.text;
+    } catch (genError) {
+      log.error(`Model verification generateText failed [model="${model ?? 'unknown'}"]:`, genError);
+
+      let errorMessage = 'Connection failed';
+      let statusCode = 500;
+      if (genError instanceof Error) {
+        const msg = genError.message;
+        if (msg.includes('401') || msg.includes('Unauthorized') || msg.includes('AUTH')) {
+          errorMessage = 'API key is invalid or expired';
+          statusCode = 401;
+        } else if (msg.includes('404') || msg.includes('not found') || msg.includes('Not Found')) {
+          errorMessage = 'Model not found or API endpoint error';
+          statusCode = 404;
+        } else if (msg.includes('429') || msg.includes('rate limit') || msg.includes('Rate limit')) {
+          errorMessage = 'API rate limit exceeded, please try again later';
+          statusCode = 429;
+        } else if (msg.includes('ENOTFOUND') || msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT')) {
+          errorMessage = 'Cannot connect to API server, please check the Base URL';
+          statusCode = 502;
+        } else if (msg.includes('timeout') || msg.includes('Timeout')) {
+          errorMessage = 'Connection timed out, please check your network';
+          statusCode = 504;
+        } else {
+          errorMessage = msg;
+          statusCode = 500;
+        }
+      }
+
+      return apiError('MODEL_VERIFICATION_FAILED', statusCode, errorMessage);
+    }
 
     return apiSuccess({
       message: 'Connection successful',
@@ -50,20 +83,7 @@ export async function POST(req: NextRequest) {
 
     let errorMessage = 'Connection failed';
     if (error instanceof Error) {
-      // Parse common error messages
-      if (error.message.includes('401') || error.message.includes('Unauthorized')) {
-        errorMessage = 'API key is invalid or expired';
-      } else if (error.message.includes('404') || error.message.includes('not found')) {
-        errorMessage = 'Model not found or API endpoint error';
-      } else if (error.message.includes('429')) {
-        errorMessage = 'API rate limit exceeded, please try again later';
-      } else if (error.message.includes('ENOTFOUND') || error.message.includes('ECONNREFUSED')) {
-        errorMessage = 'Cannot connect to API server, please check the Base URL';
-      } else if (error.message.includes('timeout')) {
-        errorMessage = 'Connection timed out, please check your network';
-      } else {
-        errorMessage = error.message;
-      }
+      errorMessage = error.message;
     }
 
     return apiError('INTERNAL_ERROR', 500, errorMessage);

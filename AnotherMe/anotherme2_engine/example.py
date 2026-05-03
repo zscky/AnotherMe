@@ -3,7 +3,7 @@
 """
 import os
 from main import MathVideoGenerator
-from agents.config import DEFAULT_LLM_CONFIG, VISION_MODEL_CONFIG
+from agents.foundation.config import DEFAULT_LLM_CONFIG, VISION_MODEL_CONFIG
 
 # 设置 API 密钥（从环境变量获取）
 # os.environ["ARK_API_KEY"] = "your_api_key_here"
@@ -35,8 +35,8 @@ def example_2_with_text():
 
 def example_3_programmatic():
     """示例 3: 程序化调用（在代码中使用）"""
-    from agents.workflow import create_default_workflow
-    from agents.state import AgentState, VideoProject
+    from agents.orchestration.workflow import create_default_workflow
+    from agents.foundation.state import AgentState, VideoProject
 
     # 创建工作流
     workflow = create_default_workflow(

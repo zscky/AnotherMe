@@ -25,14 +25,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const resolvedBaseUrl = clientBaseUrl ? clientBaseUrl : resolvePDFBaseUrl(providerId, baseUrl);
+    const resolvedBaseUrl = resolvePDFBaseUrl(providerId, baseUrl);
     if (!resolvedBaseUrl) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'Base URL is required');
     }
 
-    const resolvedApiKey = clientBaseUrl
-      ? (apiKey as string | undefined) || ''
-      : resolvePDFApiKey(providerId, apiKey);
+    const resolvedApiKey = resolvePDFApiKey(providerId, apiKey);
 
     const headers: Record<string, string> = {};
     if (resolvedApiKey) {

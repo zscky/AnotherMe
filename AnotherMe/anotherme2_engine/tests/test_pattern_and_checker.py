@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agents.action_executability_checker import ActionExecutabilityChecker
-from agents.case_replay_recorder import CaseReplayRecorder
-from agents.problem_pattern import ProblemPatternClassifier
-from agents.teaching_ir import TeachingIRPlanner
+from agents.planning.action_executability_checker import ActionExecutabilityChecker
+from agents.execution.case_replay_recorder import CaseReplayRecorder
+from agents.planning.problem_pattern import ProblemPatternClassifier
+from agents.planning.teaching_ir import TeachingIRPlanner
 
 
 class PatternAndCheckerTests(unittest.TestCase):
@@ -58,11 +58,50 @@ class PatternAndCheckerTests(unittest.TestCase):
         }
 
         repaired, report = checker.check_and_repair(teaching_ir=teaching_ir, geometry_ir=geometry_ir)
-        action = repaired["steps"][0]["actions"][0]
+        actions = repaired["steps"][0]["actions"]
+        fold_actions = [item for item in actions if item.get("action") == "animate_fold"]
+        self.assertTrue(fold_actions)
+        action = fold_actions[0]
 
         self.assertEqual(action.get("axis"), "seg_DE")
         self.assertEqual(report["status"], "repaired")
-        self.assertEqual(report["repaired_action_count"], 1)
+        self.assertGreaterEqual(report["repaired_action_count"], 1)
+
+    def test_action_checker_removes_redundant_fold_without_refold(self) -> None:
+        checker = ActionExecutabilityChecker()
+        teaching_ir = {
+            "version": "v1",
+            "global": {
+                "fold_plan": {
+                    "axis": "seg_DE",
+                    "moving_entities": ["B1", "C1"],
+                }
+            },
+            "steps": [
+                {
+                    "step_id": 1,
+                    "fold_execution": {"allow_refold": False},
+                    "actions": [{"action": "animate_fold", "axis": "seg_DE", "targets": ["B1"]}],
+                },
+                {
+                    "step_id": 2,
+                    "fold_execution": {"allow_refold": False},
+                    "actions": [{"action": "animate_fold", "axis": "seg_DE", "targets": ["C1"]}],
+                },
+            ],
+        }
+        geometry_ir = {
+            "points": ["A", "B", "B1", "C1"],
+            "segments": [{"id": "seg_DE", "label": "DE", "points": ["D", "E"]}],
+            "transform": {"fold_axis": "seg_DE"},
+        }
+
+        repaired, report = checker.check_and_repair(teaching_ir=teaching_ir, geometry_ir=geometry_ir)
+        first_actions = repaired["steps"][0]["actions"]
+        second_actions = repaired["steps"][1]["actions"]
+        self.assertTrue(any(item.get("action") == "animate_fold" for item in first_actions))
+        self.assertFalse(any(item.get("action") == "animate_fold" for item in second_actions))
+        self.assertEqual(report["status"], "repaired")
 
     def test_case_replay_recorder_writes_json(self) -> None:
         recorder = CaseReplayRecorder()

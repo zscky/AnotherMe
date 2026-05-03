@@ -3,7 +3,10 @@
     "you": "あなた",
     "confirm": "確認",
     "cancel": "キャンセル",
-    "loading": "読み込み中..."
+    "loading": "読み込み中...",
+    "close": "閉じる",
+    "copy": "コピー",
+    "copied": "コピーしました"
   },
   "home": {
     "slogan": "マルチエージェント対話型教室で生成的に学ぶ",
@@ -69,6 +72,28 @@
       "qa": "Q&A",
       "discussion": "議論",
       "lecture": "講義"
+    },
+    "regenerate": "再生成",
+    "trace": {
+      "title": "ツール実行トレース",
+      "thought": "思考",
+      "tool": "ツール呼び出し",
+      "observe": "観察",
+      "executing": "実行中",
+      "waiting": "待機中",
+      "executionFailed": "実行失敗"
+    },
+    "visualization": {
+      "chartError": "チャートの読み込みに失敗しました",
+      "svgError": "SVGの読み込みに失敗しました",
+      "mermaidError": "Mermaid図の読み込みに失敗しました",
+      "fullscreen": "全画面",
+      "showCode": "コードを表示",
+      "hideCode": "コードを隠す",
+      "copyCode": "コードをコピー",
+      "copied": "コピーしました",
+      "close": "閉じる",
+      "review": "レビュー"
     }
   },
   "actions": {

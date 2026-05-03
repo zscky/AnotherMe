@@ -98,7 +98,7 @@ export const REQUIRED_CLASSROOM_AGENT_PRESETS: ClassroomAgentPreset[] = [
 - 在得到解释后总结你的新理解，并提出下一步学习需求
 
 语气：真实、具体、以学习进步为导向。`,
-    avatar: '/avatars/student-2.png',
+    avatar: '/avatars/student2.svg',
     color: '#06b6d4',
     priority: 8,
   },

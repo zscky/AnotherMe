@@ -125,6 +125,45 @@ export async function authenticateUser(email: string, password: string): Promise
   return toAuthUser(row);
 }
 
+/**
+ * Authenticate user and create a new session.
+ * This function revokes all existing sessions for the user to prevent session fixation attacks.
+ * 
+ * @param email - User email
+ * @param password - User password
+ * @returns Object containing user and new session
+ */
+export async function loginAndCreateSession(
+  email: string,
+  password: string,
+): Promise<{ user: AuthUser; session: AuthSession }> {
+  const user = await authenticateUser(email, password);
+
+  // Revoke all existing sessions for this user to prevent session fixation
+  await revokeAllUserSessions(user.id);
+
+  // Create a new session
+  const session = await createSession(user.id);
+
+  return { user, session };
+}
+
+/**
+ * Revoke all sessions for a user.
+ * This should be called after successful authentication to prevent session fixation attacks.
+ * 
+ * @param userId - User ID
+ */
+export async function revokeAllUserSessions(userId: string): Promise<void> {
+  if (!userId) return;
+  await withAuthDatabase(
+    (db) => {
+      db.run('DELETE FROM sessions WHERE user_id = ?', [userId]);
+    },
+    { persist: true },
+  );
+}
+
 export async function createSession(userId: string): Promise<AuthSession> {
   return withAuthDatabase(
     (db) => {

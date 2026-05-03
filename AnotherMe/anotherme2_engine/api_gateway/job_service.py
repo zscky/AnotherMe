@@ -23,10 +23,12 @@ from .anotherme_executor import (
     run_problem_video_job,
     synthesize_problem_image_from_text,
 )
-from .chat_service import extract_learning_records
+from .chat_service import extract_learning_records, get_student_profile_snapshot
 from .config import Settings
-from .models import Job, JobArtifact, JobEvent
-from .openmaic_client import AnotherMeClient, AnotherMeError
+from .course_generation_provider import create_course_generation_provider
+from .models import AILearningRecord, Job, JobArtifact, JobEvent
+from .anotherme_client import AnotherMeClient, AnotherMeError
+from agents.foundation.trace_event import TraceEvent, TraceEventEmitter
 from .queueing import QueueMessage
 from .schemas import CreateJobRequest, JobStatus, JobType, validate_job_payload
 from .storage import ObjectStorage
@@ -110,6 +112,49 @@ def add_event(session: Session, job_id: str, event_type: str, message: str, payl
             payload=payload,
         )
     )
+
+
+def add_trace_event(
+    session: Session,
+    job_id: str,
+    event_type: str,
+    message: str,
+    trace_event_id: str,
+    trace_event_type: str,
+    payload: Dict[str, Any] | None = None,
+) -> None:
+    session.add(
+        JobEvent(
+            job_id=job_id,
+            event_type=event_type,
+            message=message,
+            payload=payload,
+            trace_event_id=trace_event_id,
+            trace_event_type=trace_event_type,
+        )
+    )
+
+
+def _persist_trace_events(session: Session, job_id: str, trace: TraceEventEmitter) -> None:
+    existing_ids = {
+        row[0]
+        for row in session.query(JobEvent.trace_event_id)
+        .filter(JobEvent.job_id == job_id, JobEvent.trace_event_id.isnot(None))
+        .all()
+    }
+    for event in trace.events:
+        if not event.id or event.id in existing_ids:
+            continue
+        add_trace_event(
+            session,
+            job_id,
+            event.type or "trace",
+            event.message or event.type or "Trace event",
+            trace_event_id=event.id,
+            trace_event_type=event.type,
+            payload=event.to_dict(),
+        )
+        existing_ids.add(event.id)
 
 
 def add_artifact(
@@ -462,7 +507,7 @@ def purge_prestart_nonterminal_jobs(
         session.query(Job)
         .filter(
             Job.status.in_([JobStatus.QUEUED.value, JobStatus.RUNNING.value]),
-            Job.created_at < cutoff,
+            Job.created_at <= cutoff,
         )
         .order_by(Job.created_at.asc())
         .limit(max_purge)
@@ -549,22 +594,32 @@ def _run_course_generate(
     settings: Settings,
 ) -> Dict[str, Any]:
     client = AnotherMeClient(settings.anotherme_base_url)
+    trace = TraceEventEmitter(job_id=job.id)
+    trace.emit_workflow_started(total_steps=4, message="Course generation started")
     try:
+        provider = create_course_generation_provider(settings, client)
         _mark_running(session, job, "submitting_anotherme", "Submitting course generation to AnotherMe", 5)
         session.commit()
 
-        submitted = client.submit_course_job(payload)
+        trace.start_step("submit", "Submitting to AnotherMe engine")
+        submitted = provider.submit(payload)
         anotherme_job_id = submitted.get("jobId") or submitted.get("job_id")
         if not anotherme_job_id:
             raise AnotherMeError(f"AnotherMe submit response missing jobId: {submitted}")
 
         job.engine_state = {**(job.engine_state or {}), "anotherme_job_id": anotherme_job_id}
+
+        trace.complete_step("submit", payload={"anotherme_job_id": anotherme_job_id})
+
         add_event(session, job.id, "engine_state", "AnotherMe job submitted", {"anotherme_job_id": anotherme_job_id})
         session.commit()
 
+        trace.start_step("polling", "Polling AnotherMe for progress")
+
         start = time.time()
+        last_step = ""
         while True:
-            poll = client.poll_course_job(anotherme_job_id)
+            poll = provider.poll(anotherme_job_id)
             status = str(poll.get("status") or "").lower()
             progress = int(poll.get("progress") or 0)
             step = str(poll.get("step") or "polling")
@@ -573,6 +628,11 @@ def _run_course_generate(
             _mark_running(session, job, step, message, progress)
             session.commit()
 
+            if step != last_step:
+                trace.complete_step(last_step if last_step else "polling", payload={"step": step, "progress": progress})
+                trace.start_step(step, message)
+                last_step = step
+
             done = bool(poll.get("done")) or status in {"succeeded", "failed"}
             if done:
                 if status == "succeeded":
@@ -580,10 +640,26 @@ def _run_course_generate(
                     classroom_id = result.get("classroomId") or result.get("classroom_id")
                     classroom_url = result.get("url") or result.get("classroom_url")
                     scenes_count = int(result.get("scenesCount") or result.get("scenes_count") or 0)
+                    meta_payload = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+                    meta = {}
+                    quality_score = meta_payload.get("quality_score")
+                    engine_version = meta_payload.get("engine_version")
+                    if quality_score is not None:
+                        meta["quality_score"] = quality_score
+                    if engine_version is not None:
+                        meta["engine_version"] = engine_version
+
+                    trace.complete_step(last_step or "polling", payload={"classroom_id": classroom_id, "scenes_count": scenes_count})
+                    trace.emit_workflow_completed(message="Course generation completed successfully")
+                    _persist_trace_events(session, job.id, trace)
+                    session.commit()
+
                     return {
                         "classroom_id": classroom_id,
                         "classroom_url": classroom_url,
                         "scenes_count": scenes_count,
+                        **({"meta": meta} if meta else {}),
+                        "trace_events": trace.to_event_list(),
                     }
                 raise AnotherMeError(poll.get("error") or "AnotherMe job failed")
 
@@ -593,6 +669,107 @@ def _run_course_generate(
             time.sleep(max(settings.anotherme_poll_seconds, 1))
     finally:
         client.close()
+
+
+def _clamp_int(value: Any, default: int, lower: int, upper: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(lower, min(upper, parsed))
+
+
+def _resolve_learner_context(
+    job: Job,
+    payload: Dict[str, Any],
+) -> tuple[str | None, str | None, int]:
+    learner_user_id = str(payload.get("learner_user_id") or job.user_id or "").strip()
+    learner_session_id_raw = str(payload.get("learner_session_id") or "").strip()
+    learner_session_id = learner_session_id_raw or None
+    lookback_days = _clamp_int(payload.get("learner_lookback_days"), default=120, lower=14, upper=365)
+    return (learner_user_id or None, learner_session_id, lookback_days)
+
+
+def _serialize_memory_learning_record(row: AILearningRecord) -> Dict[str, Any]:
+    return {
+        "record_id": row.id,
+        "session_id": row.session_id,
+        "message_id": row.message_id,
+        "subject": row.subject,
+        "knowledge_point": row.knowledge_point,
+        "question_type": row.question_type,
+        "difficulty": row.difficulty,
+        "solved_flag": bool(row.solved_flag),
+        "confusion_flag": bool(row.confusion_flag),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _build_memory_event(record: Dict[str, Any]) -> Dict[str, Any] | None:
+    knowledge_point = str(record.get("knowledge_point") or "").strip()
+    if not knowledge_point:
+        return None
+
+    confusion = bool(record.get("confusion_flag"))
+    solved = bool(record.get("solved_flag"))
+    difficulty = str(record.get("difficulty") or "").strip().lower()
+
+    if confusion and not solved:
+        event_type = "not_understood"
+    elif solved:
+        event_type = "correct"
+    else:
+        event_type = "wrong"
+
+    weight = 1.3 if difficulty == "hard" and event_type in {"not_understood", "wrong"} else 1.0
+    return {
+        "type": event_type,
+        "knowledge_points": [knowledge_point],
+        "weight": weight,
+    }
+
+
+def _build_learner_memory_bundle(
+    session: Session,
+    job: Job,
+    payload: Dict[str, Any],
+) -> Dict[str, Any] | None:
+    learner_user_id, learner_session_id, lookback_days = _resolve_learner_context(job, payload)
+    if not learner_user_id:
+        return None
+
+    profile_snapshot = get_student_profile_snapshot(
+        session,
+        learner_user_id,
+        lookback_days=lookback_days,
+    )
+
+    cutoff = _utcnow() - timedelta(days=lookback_days)
+    records_query = session.query(AILearningRecord).filter(
+        AILearningRecord.user_id == learner_user_id,
+        AILearningRecord.created_at >= cutoff,
+    )
+    if learner_session_id:
+        records_query = records_query.filter(AILearningRecord.session_id == learner_session_id)
+
+    rows = records_query.order_by(AILearningRecord.created_at.desc()).limit(120).all()
+    rows.reverse()
+    serialized_records = [_serialize_memory_learning_record(row) for row in rows]
+
+    events: list[Dict[str, Any]] = []
+    for record in serialized_records:
+        event = _build_memory_event(record)
+        if event is not None:
+            events.append(event)
+
+    return {
+        "user_id": learner_user_id,
+        "session_id": learner_session_id,
+        "lookback_days": lookback_days,
+        "profile_snapshot": profile_snapshot,
+        "recent_learning_records": serialized_records,
+        "derived_learning_events": events,
+    }
 
 
 def _run_problem_video_generate(
@@ -610,17 +787,53 @@ def _run_problem_video_generate(
             return candidate.parent.parent
         return None
 
+    trace = TraceEventEmitter(job_id=job.id)
+    trace.emit_workflow_started(total_steps=5, message="Problem video generation started")
+
     _mark_running(session, job, "running_anotherme2", "Running AnotherMe2 video pipeline", 10)
     session.commit()
 
+    learner_memory = _build_learner_memory_bundle(session, job, payload)
+    if learner_memory:
+        trace_event = trace.emit_learner_profile_loaded(
+            step="learner_profile_loaded",
+            user_id=learner_memory.get("user_id", ""),
+            weak_subjects=learner_memory.get("weak_subjects", []),
+            weak_knowledge_points=learner_memory.get("weak_knowledge_points", []),
+            ability_scores=learner_memory.get("ability_scores", []),
+        )
+        add_trace_event(
+            session,
+            job.id,
+            "learner_memory_loaded",
+            "Attached learner memory bundle for personalized video generation",
+            trace_event_id=trace_event.id,
+            trace_event_type=trace_event.type,
+            payload={
+                "learner_user_id": learner_memory.get("user_id"),
+                "learner_session_id": learner_memory.get("session_id"),
+                "records": len(learner_memory.get("recent_learning_records") or []),
+                "events": len(learner_memory.get("derived_learning_events") or []),
+            },
+        )
+        session.commit()
+
+    executor_payload = dict(payload)
+    if learner_memory:
+        executor_payload["learner_memory"] = learner_memory
+
+    trace.start_step("video_generation", "Generating problem video with AnotherMe2")
+
     exec_result = run_problem_video_job(
-        payload,
+        executor_payload,
         storage=storage,
         temp_root=settings.worker_temp_root,
         output_root=settings.worker_output_root,
         keep_run_output=settings.keep_run_output,
     )
     run_output_dir = _resolve_run_output_dir(exec_result.video_path)
+
+    trace.complete_step("video_generation", payload={"duration_sec": exec_result.duration_sec})
 
     _mark_running(session, job, "uploading_artifacts", "Uploading generated artifacts", 80)
     session.commit()
@@ -630,12 +843,31 @@ def _run_problem_video_generate(
         video_url = storage.upload_file(exec_result.video_path, video_key)
         add_artifact(session, job.id, "problem_video", video_key, video_url)
 
+        trace_event = trace.emit(TraceEvent(
+            type="video_rendered",
+            step="uploading_artifacts",
+            status="completed",
+            message=f"Video rendered and uploaded: {video_key}",
+            severity="success",
+            payload={"video_key": video_key, "video_url": video_url},
+        ))
+        add_trace_event(
+            session,
+            job.id,
+            "artifact_uploaded",
+            "Problem video artifact uploaded",
+            trace_event_id=trace_event.id,
+            trace_event_type=trace_event.type,
+            payload={"video_key": video_key, "video_url": video_url},
+        )
+
         debug_url = None
         if exec_result.debug_bundle_path and Path(exec_result.debug_bundle_path).exists():
             debug_key = f"jobs/{job.id}/problem_video/debug_bundle.zip"
             debug_url = storage.upload_file(exec_result.debug_bundle_path, debug_key, content_type="application/zip")
             add_artifact(session, job.id, "debug_bundle", debug_key, debug_url)
 
+        trace.emit_workflow_completed(message="Problem video generation completed successfully")
         job.engine_state = {
             **(job.engine_state or {}),
             "requirement_hint": exec_result.requirement_hint,
@@ -643,7 +875,11 @@ def _run_problem_video_generate(
             "script_steps_count": exec_result.script_steps_count,
             "debug_bundle_url": debug_url,
             "run_output_dir": str(run_output_dir) if run_output_dir else None,
+            "learner_memory_records": len((learner_memory or {}).get("recent_learning_records") or []),
+            "learner_memory_events": len((learner_memory or {}).get("derived_learning_events") or []),
+            "trace_events": trace.to_event_list(),
         }
+        _persist_trace_events(session, job.id, trace)
         session.commit()
 
         return {
@@ -651,6 +887,9 @@ def _run_problem_video_generate(
             "duration_sec": exec_result.duration_sec,
             "script_steps_count": exec_result.script_steps_count,
             "debug_bundle_url": debug_url,
+            "learner_memory_records": len((learner_memory or {}).get("recent_learning_records") or []),
+            "learner_memory_events": len((learner_memory or {}).get("derived_learning_events") or []),
+            "trace_events": trace.to_event_list(),
         }
     finally:
         # Optional cleanup: preserve run_output when keep_run_output is enabled.
@@ -851,6 +1090,10 @@ def _run_learning_record_extract(
         ai_session_id=str(payload["session_id"]),
         user_id=payload.get("user_id"),
         extract_version=str(payload.get("extract_version") or "v1"),
+        latest_user_message_id=(
+            str(payload.get("latest_user_message_id")) if payload.get("latest_user_message_id") else None
+        ),
+        message_count=int(payload["message_count"]) if payload.get("message_count") is not None else None,
     )
 
 

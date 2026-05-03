@@ -1,4 +1,5 @@
 import { createLogger } from '@/lib/logger';
+import type { LearningContext } from '@/lib/types/learning-context';
 
 const log = createLogger('AnotherMe2Gateway');
 
@@ -28,6 +29,8 @@ export interface AnotherMe2ProblemVideoResult {
   duration_sec?: number;
   script_steps_count?: number;
   debug_bundle_url?: string | null;
+  learner_memory_records?: number;
+  learner_memory_events?: number;
 }
 
 export interface GatewayConversationSummary {
@@ -129,6 +132,66 @@ export interface LearningRecordExtractResult {
   subjects: string[];
   knowledge_points: string[];
   extract_version: string;
+  latest_user_message_id?: string;
+  message_count?: number;
+}
+
+export interface GatewayLearningRecord {
+  record_id: string;
+  user_id: string;
+  session_id: string;
+  message_id?: string | null;
+  subject?: string | null;
+  knowledge_point?: string | null;
+  question_type?: string | null;
+  difficulty?: string | null;
+  solved_flag: boolean;
+  confusion_flag: boolean;
+  extract_version: string;
+  created_at: string;
+}
+
+export interface GatewayAbilityScore {
+  metric: string;
+  value: number;
+  full_mark: number;
+}
+
+export interface GatewayLearningStats {
+  records_total: number;
+  records_14d: number;
+  active_days_14: number;
+  confusion_records: number;
+  solved_records: number;
+  top_subjects: string[];
+  top_knowledge_points: string[];
+  total_weight: number;
+}
+
+export interface GatewayStudentProfile {
+  user_id: string;
+  weak_subjects: string[];
+  weak_knowledge_points: string[];
+  recent_focus?: string | null;
+  ability_scores: GatewayAbilityScore[];
+  learning_stats: GatewayLearningStats;
+  updated_at?: string | null;
+  computed_at: string;
+  profile_source: string;
+}
+
+export interface GatewayLearningEvent {
+  event_id: string;
+  user_id: string;
+  event_type: string;
+  session_id?: string | null;
+  classroom_id?: string | null;
+  scene_id?: string | null;
+  block_id?: string | null;
+  knowledge_points?: string[] | null;
+  payload?: Record<string, unknown> | null;
+  weight: number;
+  created_at: string;
 }
 
 interface AnotherMe2JobResultResponse {
@@ -237,6 +300,10 @@ export async function createAnotherMe2ProblemVideoJob(params: {
   imageObjectKey: string;
   problemText?: string;
   outputProfile?: '1080p';
+  userId?: string;
+  learnerSessionId?: string;
+  learnerLookbackDays?: number;
+  learningContext?: LearningContext;
 }): Promise<AnotherMe2JobSummary> {
   const payload: Record<string, unknown> = {
     image_object_key: params.imageObjectKey,
@@ -244,6 +311,18 @@ export async function createAnotherMe2ProblemVideoJob(params: {
   };
   if (params.problemText?.trim()) {
     payload.problem_text = params.problemText.trim();
+  }
+  if (params.userId?.trim()) {
+    payload.learner_user_id = params.userId.trim();
+  }
+  if (params.learnerSessionId?.trim()) {
+    payload.learner_session_id = params.learnerSessionId.trim();
+  }
+  if (typeof params.learnerLookbackDays === 'number') {
+    payload.learner_lookback_days = params.learnerLookbackDays;
+  }
+  if (params.learningContext) {
+    payload.learning_context = params.learningContext;
   }
 
   return gatewayFetch<AnotherMe2JobSummary>('/v1/jobs', {
@@ -253,7 +332,7 @@ export async function createAnotherMe2ProblemVideoJob(params: {
     },
     body: JSON.stringify({
       job_type: 'problem_video_generate',
-      user_id: DEFAULT_USER_ID,
+      user_id: params.userId?.trim() || DEFAULT_USER_ID,
       payload,
     }),
   });
@@ -338,6 +417,24 @@ export async function removeGatewayConversationMember(params: {
   const encodedMemberUserId = encodeURIComponent(params.memberUserId);
   return gatewayFetch<GatewayRemoveConversationMemberResult>(
     `/v1/messages/${params.conversationId}/members/${encodedMemberUserId}`,
+    {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        operator_user_id: params.operatorUserId,
+      }),
+    },
+  );
+}
+
+export async function deleteGatewayConversation(params: {
+  conversationId: string;
+  operatorUserId: string;
+}): Promise<{ conversation_id: string; deleted: boolean }> {
+  return gatewayFetch<{ conversation_id: string; deleted: boolean }>(
+    `/v1/messages/conversations/${encodeURIComponent(params.conversationId)}`,
     {
       method: 'DELETE',
       headers: {
@@ -531,6 +628,8 @@ export async function createLearningRecordExtractJob(params: {
   sessionId: string;
   userId?: string;
   extractVersion?: string;
+  latestUserMessageId?: string;
+  messageCount?: number;
 }): Promise<AnotherMe2JobSummary> {
   return gatewayFetch<AnotherMe2JobSummary>('/v1/jobs', {
     method: 'POST',
@@ -544,6 +643,8 @@ export async function createLearningRecordExtractJob(params: {
         session_id: params.sessionId,
         user_id: params.userId,
         extract_version: params.extractVersion || 'v1',
+        latest_user_message_id: params.latestUserMessageId,
+        message_count: params.messageCount,
       },
     }),
   });
@@ -554,6 +655,250 @@ export async function getLearningRecordExtractResult(jobId: string): Promise<Lea
     `/v1/jobs/${jobId}/result`,
   );
   return payload.result;
+}
+
+export async function listGatewayAILearningRecords(params: {
+  sessionId: string;
+  userId?: string;
+  limit?: number;
+}): Promise<GatewayLearningRecord[]> {
+  const query = new URLSearchParams();
+  if (params.userId) {
+    query.set('user_id', params.userId);
+  }
+  if (typeof params.limit === 'number') {
+    query.set('limit', String(params.limit));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return gatewayFetch<GatewayLearningRecord[]>(
+    `/v1/ai/sessions/${params.sessionId}/learning-records${suffix}`,
+  );
+}
+
+export async function getGatewayStudentProfile(params: {
+  userId: string;
+  lookbackDays?: number;
+}): Promise<GatewayStudentProfile> {
+  const query = new URLSearchParams();
+  if (typeof params.lookbackDays === 'number') {
+    query.set('lookback_days', String(params.lookbackDays));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return gatewayFetch<GatewayStudentProfile>(`/v1/students/${params.userId}/profile${suffix}`);
+}
+
+export async function createGatewayLearningEvent(params: {
+  userId: string;
+  eventType: string;
+  sessionId?: string;
+  classroomId?: string;
+  sceneId?: string;
+  blockId?: string;
+  knowledgePoints?: string[];
+  payload?: Record<string, unknown>;
+  weight?: number;
+}): Promise<GatewayLearningEvent> {
+  return gatewayFetch<GatewayLearningEvent>(
+    `/v1/users/${encodeURIComponent(params.userId)}/learning-events`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        event_type: params.eventType,
+        session_id: params.sessionId,
+        classroom_id: params.classroomId,
+        scene_id: params.sceneId,
+        block_id: params.blockId,
+        knowledge_points: params.knowledgePoints,
+        payload: params.payload,
+        weight: params.weight,
+      }),
+    },
+  );
+}
+
+export interface GatewayKnowledgePoint {
+  id: string;
+  subject?: string | null;
+  name: string;
+  description?: string | null;
+  parent_id?: string | null;
+  prerequisites: string[];
+  difficulty?: string | null;
+  created_at: string;
+}
+
+export interface GatewayStudentKnowledgeState {
+  user_id: string;
+  knowledge_point_id: string;
+  p_mastery: number;
+  p_learn: number;
+  p_guess: number;
+  p_slip: number;
+  attempts: number;
+  correct_attempts: number;
+  last_updated_at?: string | null;
+}
+
+export interface GatewayTeachingDecision {
+  target_knowledge_point_id: string;
+  mastery: number;
+  action: string;
+  reason: string;
+}
+
+export interface GatewayQuizAnswerResult {
+  knowledge_point_id: string;
+  prior_mastery: number;
+  posterior_mastery: number;
+  attempts: number;
+  correct_attempts: number;
+}
+
+export interface GatewayStudentKnowledgeContext {
+  context_text: string;
+}
+
+export async function listGatewayKnowledgePoints(params?: {
+  subject?: string;
+  parentId?: string;
+  limit?: number;
+}): Promise<GatewayKnowledgePoint[]> {
+  const query = new URLSearchParams();
+  if (params?.subject) {
+    query.set('subject', params.subject);
+  }
+  if (params?.parentId) {
+    query.set('parent_id', params.parentId);
+  }
+  if (typeof params?.limit === 'number') {
+    query.set('limit', String(params.limit));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return gatewayFetch<GatewayKnowledgePoint[]>(`/v1/knowledge-points${suffix}`);
+}
+
+export async function getGatewayStudentKnowledgeStates(params: {
+  userId: string;
+  knowledgePointIds?: string[];
+  minMastery?: number;
+  limit?: number;
+}): Promise<GatewayStudentKnowledgeState[]> {
+  const query = new URLSearchParams();
+  if (params.knowledgePointIds?.length) {
+    params.knowledgePointIds.forEach((id) => query.append('knowledge_point_ids', id));
+  }
+  if (typeof params.minMastery === 'number') {
+    query.set('min_mastery', String(params.minMastery));
+  }
+  if (typeof params.limit === 'number') {
+    query.set('limit', String(params.limit));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return gatewayFetch<GatewayStudentKnowledgeState[]>(
+    `/v1/users/${encodeURIComponent(params.userId)}/knowledge-states${suffix}`,
+  );
+}
+
+export async function getGatewayStudentKnowledgeState(params: {
+  userId: string;
+  knowledgePointId: string;
+}): Promise<GatewayStudentKnowledgeState> {
+  return gatewayFetch<GatewayStudentKnowledgeState>(
+    `/v1/users/${encodeURIComponent(params.userId)}/knowledge-states/${encodeURIComponent(params.knowledgePointId)}`,
+  );
+}
+
+export async function getGatewayTeachingDecisions(params: {
+  userId: string;
+  knowledgePointIds?: string[];
+}): Promise<GatewayTeachingDecision[]> {
+  const query = new URLSearchParams();
+  if (params.knowledgePointIds?.length) {
+    params.knowledgePointIds.forEach((id) => query.append('knowledge_point_ids', id));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return gatewayFetch<GatewayTeachingDecision[]>(
+    `/v1/users/${encodeURIComponent(params.userId)}/teaching-decisions${suffix}`,
+  );
+}
+
+export async function getGatewayTeachingDecision(params: {
+  userId: string;
+  knowledgePointId: string;
+}): Promise<GatewayTeachingDecision> {
+  return gatewayFetch<GatewayTeachingDecision>(
+    `/v1/users/${encodeURIComponent(params.userId)}/teaching-decisions/${encodeURIComponent(params.knowledgePointId)}`,
+  );
+}
+
+export async function getGatewayStudentKnowledgeContext(params: {
+  userId: string;
+  knowledgePointId: string;
+}): Promise<GatewayStudentKnowledgeContext> {
+  return gatewayFetch<GatewayStudentKnowledgeContext>(
+    `/v1/users/${encodeURIComponent(params.userId)}/knowledge-context/${encodeURIComponent(params.knowledgePointId)}`,
+  );
+}
+
+export async function createGatewayQuizAnswer(params: {
+  userId: string;
+  questionId: string;
+  isCorrect: boolean;
+  payload?: Record<string, unknown>;
+}): Promise<GatewayQuizAnswerResult[]> {
+  return gatewayFetch<GatewayQuizAnswerResult[]>(
+    `/v1/users/${encodeURIComponent(params.userId)}/quiz-answers`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        question_id: params.questionId,
+        is_correct: params.isCorrect,
+        payload: params.payload,
+      }),
+    },
+  );
+}
+
+export interface GatewayDiagnosticProbe {
+  probe_id: string;
+  knowledge_point_id: string;
+  question: string;
+  options: string[] | null;
+  correct_answer: string;
+  explanation: string;
+  difficulty: string;
+  probe_type: string;
+  hints: string[];
+  teaching_action: string;
+  reason: string;
+}
+
+export async function createGatewayDiagnosticProbe(params: {
+  userId: string;
+  knowledgePointId?: string;
+  difficulty?: string;
+  probeType?: string;
+}): Promise<GatewayDiagnosticProbe> {
+  return gatewayFetch<GatewayDiagnosticProbe>(
+    `/v1/users/${encodeURIComponent(params.userId)}/diagnostic-probes`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        knowledge_point_id: params.knowledgePointId,
+        difficulty: params.difficulty,
+        probe_type: params.probeType,
+      }),
+    },
+  );
 }
 
 export function isAnotherMe2GatewayError(error: unknown): error is AnotherMe2GatewayError {

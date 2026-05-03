@@ -47,12 +47,8 @@ export async function POST(req: NextRequest) {
 
     const config = {
       providerId: effectiveProviderId,
-      apiKey: clientBaseUrl
-        ? apiKey || ''
-        : resolvePDFApiKey(effectiveProviderId, apiKey || undefined),
-      baseUrl: clientBaseUrl
-        ? clientBaseUrl
-        : resolvePDFBaseUrl(effectiveProviderId, baseUrl || undefined),
+      apiKey: resolvePDFApiKey(effectiveProviderId, apiKey || undefined),
+      baseUrl: resolvePDFBaseUrl(effectiveProviderId, baseUrl || undefined),
     };
 
     // Convert PDF to buffer

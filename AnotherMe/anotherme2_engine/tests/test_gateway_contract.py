@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
@@ -19,7 +22,20 @@ from api_gateway.job_service import (
     purge_prestart_nonterminal_jobs,
     reconcile_single_running_problem_video_job_with_artifacts,
 )
-from api_gateway.models import Job, JobArtifact
+from api_gateway.course_generation_provider import (
+    LegacyCourseGenerationProvider,
+    MiddleSchoolMathCourseGenerationProvider,
+    create_course_generation_provider,
+)
+from api_gateway.models import (
+    AIChatMessage,
+    AIChatSession,
+    AILearningRecord,
+    Job,
+    JobArtifact,
+    LearningEvent,
+    StudentProfile,
+)
 from api_gateway.queueing import QueueMessage
 from api_gateway.schemas import CreateJobRequest, JobType, validate_job_payload
 from api_gateway.storage import LocalObjectStorage
@@ -41,6 +57,49 @@ class FakeQueueClient:
         return True
 
 
+class StubCourseClient:
+    def __init__(self):
+        self.last_payload = None
+
+    def submit_course_job(self, payload):
+        self.last_payload = payload
+        return {"jobId": "job-1"}
+
+    def poll_course_job(self, job_id):
+        return {"jobId": job_id, "status": "running"}
+
+
+def test_settings_startup_purge_requires_safety_latch():
+    settings_unarmed = Settings(
+        purge_prestart_jobs_on_startup=True,
+        startup_purge_armed=False,
+    )
+    assert settings_unarmed.startup_purge_enabled is False
+
+    settings_armed = Settings(
+        purge_prestart_jobs_on_startup=True,
+        startup_purge_armed=True,
+    )
+    assert settings_armed.startup_purge_enabled is True
+
+
+def test_course_generation_provider_switch_and_payload_injection():
+    stub = StubCourseClient()
+
+    legacy_settings = Settings(course_generation_provider="legacy")
+    legacy_provider = create_course_generation_provider(legacy_settings, stub)  # type: ignore[arg-type]
+    assert isinstance(legacy_provider, LegacyCourseGenerationProvider)
+    legacy_provider.submit({"requirement": "讲解勾股定理"})
+    assert "pedagogy_profile" not in (stub.last_payload or {})
+
+    msm_settings = Settings(course_generation_provider="msm_v1")
+    msm_provider = create_course_generation_provider(msm_settings, stub)  # type: ignore[arg-type]
+    assert isinstance(msm_provider, MiddleSchoolMathCourseGenerationProvider)
+    msm_provider.submit({"requirement": "讲解勾股定理"})
+    assert stub.last_payload is not None
+    assert stub.last_payload["pedagogy_profile"]["domain"] == "middle-school-math"
+
+
 def test_validate_payload_defaults():
     payload = validate_job_payload(
         JobType.COURSE_GENERATE,
@@ -58,6 +117,54 @@ def test_validate_payload_defaults():
         },
     )
     assert payload2["output_profile"] == "1080p"
+
+
+def test_validate_problem_video_payload_accepts_learner_context():
+    payload = validate_job_payload(
+        JobType.PROBLEM_VIDEO_GENERATE,
+        {
+            "image_object_key": "uploads/a.png",
+            "learner_user_id": "stu-01",
+            "learner_session_id": "sess-01",
+            "learner_lookback_days": 45,
+        },
+    )
+    assert payload["learner_user_id"] == "stu-01"
+    assert payload["learner_session_id"] == "sess-01"
+    assert payload["learner_lookback_days"] == 45
+
+
+def test_validate_course_payload_accepts_optional_pedagogy_profile():
+    payload = validate_job_payload(
+        JobType.COURSE_GENERATE,
+        {
+            "requirement": "讲解一次函数",
+            "pedagogy_profile": {
+                "domain": "middle-school-math",
+                "exam_orientation": "zhongkao",
+                "grade_band": "grade8",
+                "strictness": "high",
+            },
+        },
+    )
+    assert payload["pedagogy_profile"]["domain"] == "middle-school-math"
+    assert payload["pedagogy_profile"]["strictness"] == "high"
+
+
+def test_validate_learning_extract_payload_accepts_snapshot_fields():
+    payload = validate_job_payload(
+        JobType.LEARNING_RECORD_EXTRACT,
+        {
+            "session_id": "sess-1",
+            "extract_version": "v2",
+            "latest_user_message_id": "msg-9",
+            "message_count": 12,
+        },
+    )
+    assert payload["session_id"] == "sess-1"
+    assert payload["extract_version"] == "v2"
+    assert payload["latest_user_message_id"] == "msg-9"
+    assert payload["message_count"] == 12
 
 
 def test_idempotent_job_creation(tmp_path: Path):
@@ -245,7 +352,125 @@ def test_problem_video_result_contract(tmp_path: Path):
                 storage=storage,
             )
 
-        assert set(result.keys()) == {"video_url", "duration_sec", "script_steps_count", "debug_bundle_url"}
+        assert set(result.keys()) >= {
+            "video_url",
+            "duration_sec",
+            "script_steps_count",
+            "debug_bundle_url",
+            "learner_memory_records",
+            "learner_memory_events",
+        }
+
+
+def test_problem_video_pipeline_attaches_learner_memory_bundle(tmp_path: Path):
+    db_path = tmp_path / "pv-memory.db"
+    obj_root = tmp_path / "objects"
+    reconfigure_db(f"sqlite:///{db_path}")
+    init_db()
+    storage = LocalObjectStorage(obj_root)
+
+    fake_video = tmp_path / "memory_fake.mp4"
+    fake_video.write_bytes(b"video")
+    now = datetime.utcnow()
+
+    with session_scope() as session:
+        ai_session = AIChatSession(
+            id="sess-memory-1",
+            user_id="stu-memory-1",
+            title="memory",
+            source="课后答疑",
+            subject="数学",
+            archived_flag=False,
+            created_at=now - timedelta(days=2),
+            updated_at=now - timedelta(days=1),
+        )
+        record = AILearningRecord(
+            id=str(uuid4()),
+            user_id="stu-memory-1",
+            session_id="sess-memory-1",
+            message_id=None,
+            subject="数学",
+            knowledge_point="勾股定理",
+            question_type="qa",
+            difficulty="hard",
+            solved_flag=False,
+            confusion_flag=True,
+            extract_version="v1",
+            created_at=now - timedelta(hours=8),
+        )
+        job = Job(
+            job_type="problem_video_generate",
+            queue_name="q.problem_video",
+            user_id="stu-memory-1",
+            idempotency_key="idem-problem-video-memory-contract",
+            status="running",
+            progress=0,
+            step="running",
+            max_retries=0,
+            input_payload={"image_object_key": "uploads/a.png"},
+            normalized_payload={
+                "image_object_key": "uploads/a.png",
+                "output_profile": "1080p",
+                "learner_user_id": "stu-memory-1",
+                "learner_session_id": "sess-memory-1",
+                "learner_lookback_days": 30,
+            },
+            engine_state={},
+        )
+        session.add_all([ai_session, record, job])
+        session.flush()
+
+        captured_payload: dict[str, Any] = {}
+
+        def _fake_run_problem_video_job(payload, **kwargs):
+            captured_payload.update(payload)
+            return ProblemVideoExecutionResult(
+                video_path=str(fake_video),
+                duration_sec=9.8,
+                script_steps_count=2,
+                debug_bundle_path=None,
+                requirement_hint="hint",
+            )
+
+        with patch(
+            "api_gateway.job_service.get_student_profile_snapshot",
+            return_value={
+                "user_id": "stu-memory-1",
+                "weak_subjects": ["数学"],
+                "weak_knowledge_points": ["勾股定理"],
+                "recent_focus": "数学",
+                "ability_scores": [],
+                "learning_stats": {
+                    "records_total": 1,
+                    "records_14d": 1,
+                    "active_days_14": 1,
+                    "confusion_records": 1,
+                    "solved_records": 0,
+                    "top_subjects": ["数学"],
+                    "top_knowledge_points": ["勾股定理"],
+                    "total_weight": 1.0,
+                },
+                "updated_at": now.isoformat(),
+                "computed_at": now.isoformat(),
+                "profile_source": "computed_with_decay",
+            },
+        ), patch("api_gateway.job_service.run_problem_video_job", side_effect=_fake_run_problem_video_job):
+            result = _run_problem_video_generate(
+                session=session,
+                job=job,
+                payload=job.normalized_payload,
+                settings=Settings(local_storage_root=str(obj_root)),
+                storage=storage,
+            )
+
+        assert "learner_memory" in captured_payload
+        learner_memory = captured_payload["learner_memory"]
+        assert learner_memory["user_id"] == "stu-memory-1"
+        assert learner_memory["session_id"] == "sess-memory-1"
+        assert len(learner_memory["recent_learning_records"]) == 1
+        assert len(learner_memory["derived_learning_events"]) == 1
+        assert result["learner_memory_records"] == 1
+        assert result["learner_memory_events"] == 1
 
 
 def test_problem_video_missing_input_is_failed_without_retry(tmp_path: Path):
@@ -486,3 +711,191 @@ def test_purge_prestart_nonterminal_jobs_marks_queued_and_running_failed(tmp_pat
         assert queued_job.error_code == "JOB_PURGED_ON_RESTART"
         assert running_job.error_code == "JOB_PURGED_ON_RESTART"
         assert succeeded_job.status == "succeeded"
+
+
+def test_api_learning_records_and_student_profile_contract(tmp_path: Path):
+    db_path = tmp_path / "learning-profile.db"
+    storage_root = tmp_path / "objects"
+    reconfigure_db(f"sqlite:///{db_path}")
+    init_db()
+
+    settings = Settings(
+        database_url=f"sqlite:///{db_path}",
+        redis_url="redis://unused",
+        local_storage_root=str(storage_root),
+    )
+    app = create_app(
+        settings_override=settings,
+        queue_client_override=FakeQueueClient(),
+        storage_override=LocalObjectStorage(storage_root),
+    )
+    client = TestClient(app)
+
+    user_id = "stu-1"
+    session_id = str(uuid4())
+    user_msg_id = str(uuid4())
+    now = datetime.utcnow()
+
+    with session_scope() as session:
+        ai_session = AIChatSession(
+            id=session_id,
+            user_id=user_id,
+            title="测试会话",
+            source="课后答疑",
+            subject="数学",
+            archived_flag=False,
+            created_at=now - timedelta(hours=4),
+            updated_at=now - timedelta(hours=1),
+        )
+        ai_message = AIChatMessage(
+            id=user_msg_id,
+            session_id=session_id,
+            role="user",
+            content="我不懂二次函数图像",
+            content_type="text",
+            created_at=now - timedelta(hours=3),
+        )
+        learning_record = AILearningRecord(
+            id=str(uuid4()),
+            user_id=user_id,
+            session_id=session_id,
+            message_id=user_msg_id,
+            subject="数学",
+            knowledge_point="二次函数",
+            question_type="qa",
+            difficulty="medium",
+            solved_flag=False,
+            confusion_flag=True,
+            extract_version="v1",
+            created_at=now - timedelta(hours=2),
+        )
+        profile = StudentProfile(
+            user_id=user_id,
+            weak_subjects=["数学"],
+            weak_knowledge_points=["二次函数"],
+            recent_focus="数学",
+            updated_at=now - timedelta(hours=1),
+        )
+        session.add_all([ai_session, ai_message, learning_record, profile])
+        session.flush()
+
+    learning_resp = client.get(
+        f"/v1/ai/sessions/{session_id}/learning-records",
+        params={"user_id": user_id, "limit": 20},
+    )
+    assert learning_resp.status_code == 200
+    learning_payload = learning_resp.json()
+    assert isinstance(learning_payload, list)
+    assert len(learning_payload) == 1
+    assert learning_payload[0]["knowledge_point"] == "二次函数"
+    assert learning_payload[0]["confusion_flag"] is True
+
+    profile_resp = client.get(f"/v1/students/{user_id}/profile")
+    assert profile_resp.status_code == 200
+    profile_payload = profile_resp.json()
+    assert profile_payload["user_id"] == user_id
+    assert profile_payload["profile_source"] in {"computed_with_decay", "profile_only"}
+    assert isinstance(profile_payload["ability_scores"], list)
+    assert len(profile_payload["ability_scores"]) == 5
+    assert "数学" in profile_payload["weak_subjects"]
+    assert profile_payload["learning_stats"]["records_total"] >= 1
+
+
+def test_learning_events_api_and_profile_signal(tmp_path: Path):
+    db_path = tmp_path / "learning-events.db"
+    storage_root = tmp_path / "objects"
+    reconfigure_db(f"sqlite:///{db_path}")
+    init_db()
+
+    settings = Settings(
+        database_url=f"sqlite:///{db_path}",
+        redis_url="redis://unused",
+        local_storage_root=str(storage_root),
+    )
+    app = create_app(
+        settings_override=settings,
+        queue_client_override=FakeQueueClient(),
+        storage_override=LocalObjectStorage(storage_root),
+    )
+    client = TestClient(app)
+
+    missing_user_resp = client.post(
+        "/v1/learning-events",
+        json={
+            "event_type": "quiz_answered",
+            "knowledge_points": ["二次函数"],
+            "payload": {"is_correct": False, "subject": "数学"},
+        },
+    )
+    assert missing_user_resp.status_code == 400
+
+    event_resp = client.post(
+        "/v1/users/stu-events-1/learning-events",
+        json={
+            "event_type": "quiz_answered",
+            "classroom_id": "class-1",
+            "scene_id": "scene-1",
+            "block_id": "block-scene-1",
+            "knowledge_points": ["二次函数"],
+            "payload": {"is_correct": False, "subject": "数学"},
+            "weight": 1.2,
+        },
+    )
+    assert event_resp.status_code == 200
+    event_payload = event_resp.json()
+    assert event_payload["user_id"] == "stu-events-1"
+    assert event_payload["event_type"] == "quiz_answered"
+
+    with session_scope() as session:
+        assert session.query(LearningEvent).filter(LearningEvent.user_id == "stu-events-1").count() == 1
+
+    events_resp = client.get("/v1/users/stu-events-1/learning-events")
+    assert events_resp.status_code == 200
+    assert len(events_resp.json()) == 1
+
+    profile_resp = client.get("/v1/students/stu-events-1/profile")
+    assert profile_resp.status_code == 200
+    profile_payload = profile_resp.json()
+    assert "二次函数" in profile_payload["weak_knowledge_points"]
+    assert profile_payload["learning_stats"]["records_total"] == 1
+
+
+def test_api_learning_records_rejects_unowned_session_access(tmp_path: Path):
+    db_path = tmp_path / "learning-profile-unauth.db"
+    storage_root = tmp_path / "objects"
+    reconfigure_db(f"sqlite:///{db_path}")
+    init_db()
+
+    settings = Settings(
+        database_url=f"sqlite:///{db_path}",
+        redis_url="redis://unused",
+        local_storage_root=str(storage_root),
+    )
+    app = create_app(
+        settings_override=settings,
+        queue_client_override=FakeQueueClient(),
+        storage_override=LocalObjectStorage(storage_root),
+    )
+    client = TestClient(app)
+
+    with session_scope() as session:
+        session.add(
+            AIChatSession(
+                id=str(uuid4()),
+                user_id="owner-1",
+                title="only owner",
+                source="课后答疑",
+                subject="数学",
+                archived_flag=False,
+            )
+        )
+        session.flush()
+        target_session_id = session.query(AIChatSession.id).first()[0]
+
+    denied_resp = client.get(
+        f"/v1/ai/sessions/{target_session_id}/learning-records",
+        params={"user_id": "attacker"},
+    )
+    assert denied_resp.status_code == 400
+    denied_payload = denied_resp.json()
+    assert denied_payload["error_code"] == "INVALID_REQUEST"

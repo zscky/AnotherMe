@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
-import { authenticateUser, createSession } from '@/lib/auth/service';
+import { loginAndCreateSession } from '@/lib/auth/service';
 import { AuthError } from '@/lib/auth/types';
 import { attachSessionCookie } from '@/lib/auth/session';
 
@@ -19,8 +19,9 @@ export async function POST(request: NextRequest) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'email and password are required');
     }
 
-    const user = await authenticateUser(email, password);
-    const session = await createSession(user.id);
+    // Use loginAndCreateSession to prevent session fixation attacks
+    // This revokes all existing sessions before creating a new one
+    const { user, session } = await loginAndCreateSession(email, password);
 
     const response = apiSuccess({ user });
     attachSessionCookie(response, session);

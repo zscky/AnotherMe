@@ -3,6 +3,11 @@
 The Next.js app loads ``AnotherMe/.env.local`` automatically, but the Python
 services do not. That caused the gateway worker to miss model credentials at
 runtime unless the shell environment had been exported manually first.
+
+Runtime configuration is intentionally scoped to the app/service directories:
+``AnotherMe/.env.local`` for the Next.js app and shared provider credentials,
+and ``AnotherMe/anotherme2_engine/api_gateway/.env`` for gateway-specific
+settings.
 """
 
 from __future__ import annotations
@@ -18,7 +23,6 @@ def _iter_candidate_files() -> list[Path]:
     base_dir = Path(__file__).resolve().parent
     api_gateway_dir = base_dir / "api_gateway"
     anotherme_dir = base_dir.parent
-    repo_root = anotherme_dir.parent
 
     # Higher-priority files come first because we only fill missing variables.
     return [
@@ -26,8 +30,6 @@ def _iter_candidate_files() -> list[Path]:
         api_gateway_dir / ".env",
         anotherme_dir / ".env.local",
         anotherme_dir / ".env",
-        repo_root / ".env.local",
-        repo_root / ".env",
         base_dir / ".env.local",
         base_dir / ".env",
     ]

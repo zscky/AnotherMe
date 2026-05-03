@@ -10,7 +10,7 @@ import {
 } from '@/lib/audio/voice-resolver';
 import type { AgentConfig } from '@/lib/orchestration/registry/types';
 import type { TTSProviderId } from '@/lib/audio/types';
-import type { AudioIndicatorState } from '@/components/roundtable/audio-indicator';
+import type { AudioIndicatorState } from '@/features/classroom/components/roundtable/audio-indicator';
 
 interface DiscussionTTSOptions {
   enabled: boolean;

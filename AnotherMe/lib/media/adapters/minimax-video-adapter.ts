@@ -10,10 +10,17 @@ import type {
   VideoGenerationOptions,
   VideoGenerationResult,
 } from '../types';
+import { runAsyncTaskWithPolling } from './async-task-runner';
 
 const BASE_URL = 'https://api.minimaxi.com';
-const POLL_INTERVAL_MS = 5000;
-const MAX_POLL_ATTEMPTS = 120; // ~10 minutes max
+const POLL_MAX_INTERVAL_MS = 5000;
+const POLL_INITIAL_INTERVAL_MS = 1000;
+const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+
+function getPollDelayMs(attempt: number): number {
+  const exponentialDelay = POLL_INITIAL_INTERVAL_MS * Math.pow(2, attempt);
+  return Math.min(POLL_MAX_INTERVAL_MS, exponentialDelay);
+}
 
 interface MiniMaxSubmitResponse {
   task_id: string;
@@ -161,42 +168,31 @@ export async function generateWithMiniMaxVideo(
   const taskId = await submitTask(config, options);
 
   // Step 2: Poll until complete
-  let lastStatus = '';
-  let attempts = 0;
-
-  while (attempts < MAX_POLL_ATTEMPTS) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-
-    const result = await pollTaskStatus(config, taskId);
-    lastStatus = result.status;
-
-    if (result.status === 'Success') {
+  return runAsyncTaskWithPolling<MiniMaxQueryResponse, VideoGenerationResult>({
+    taskLabel: `MiniMax video generation (task=${taskId})`,
+    timeoutMs: POLL_TIMEOUT_MS,
+    getPollDelayMs,
+    poll: async () => pollTaskStatus(config, taskId),
+    isSucceeded: (result) => result.status === 'Success',
+    isFailed: (result) => result.status === 'Fail',
+    getFailureMessage: (result) =>
+      `MiniMax Video generation failed: ${result.base_resp?.status_msg || 'unknown'}`,
+    getTimeoutMessage: (attempts) =>
+      `MiniMax Video: timeout after ${Math.floor(POLL_TIMEOUT_MS / 1000)}s, attempts: ${attempts}`,
+    mapResult: async (result) => {
       if (!result.file_id) {
-        throw new Error(`MiniMax Video: task succeeded but no file_id returned`);
+        throw new Error('MiniMax Video: task succeeded but no file_id returned');
       }
 
       const videoUrl = await retrieveFileDownloadUrl(config, result.file_id);
-
       return {
         url: videoUrl,
         width: result.video_width || 1920,
         height: result.video_height || 1080,
         duration: options.duration || 6,
       };
-    }
-
-    if (result.status === 'Fail') {
-      throw new Error(
-        `MiniMax Video generation failed: ${result.base_resp?.status_msg || 'unknown'}`,
-      );
-    }
-
-    attempts++;
-  }
-
-  throw new Error(
-    `MiniMax Video: timeout after ${MAX_POLL_ATTEMPTS} polls, last status: ${lastStatus}`,
-  );
+    },
+  });
 }
 
 export async function testMiniMaxVideoConnectivity(

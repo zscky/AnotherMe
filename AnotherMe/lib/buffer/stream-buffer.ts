@@ -78,6 +78,21 @@ export interface ErrorItem {
   message: string;
 }
 
+export interface ToolStartItem {
+  kind: 'tool_start';
+  toolName: string;
+  toolId: string;
+}
+
+export interface ToolEndItem {
+  kind: 'tool_end';
+  toolName: string;
+  toolId: string;
+  success: boolean;
+  output?: string;
+  error?: string;
+}
+
 export type BufferItem =
   | AgentStartItem
   | AgentEndItem
@@ -86,7 +101,9 @@ export type BufferItem =
   | ThinkingItem
   | CueUserItem
   | DoneItem
-  | ErrorItem;
+  | ErrorItem
+  | ToolStartItem
+  | ToolEndItem;
 
 // ─── Callbacks ───────────────────────────────────────────────────────
 
@@ -136,6 +153,10 @@ export interface StreamBufferCallbacks {
    * the bubble stays on the current text (e.g. waiting for TTS playback to finish).
    */
   shouldHoldAfterReveal?: () => { holding: boolean; segmentDone: number } | boolean;
+  /** Fired when a tool execution starts */
+  onToolStart?(data: ToolStartItem): void;
+  /** Fired when a tool execution ends */
+  onToolEnd?(data: ToolEndItem): void;
 }
 
 // ─── Options ─────────────────────────────────────────────────────────
@@ -277,6 +298,16 @@ export class StreamBuffer {
   pushError(message: string): void {
     if (this._disposed) return;
     this.items.push({ kind: 'error', message });
+  }
+
+  pushToolStart(data: Omit<ToolStartItem, 'kind'>): void {
+    if (this._disposed) return;
+    this.items.push({ kind: 'tool_start', ...data });
+  }
+
+  pushToolEnd(data: Omit<ToolEndItem, 'kind'>): void {
+    if (this._disposed) return;
+    this.items.push({ kind: 'tool_end', ...data });
   }
 
   // ─── Control ─────────────────────────────────────────────────────
@@ -606,6 +637,20 @@ export class StreamBuffer {
         this.charCursor = 0;
         this.advanceNonText();
         break;
+
+      case 'tool_start':
+        this.cb.onToolStart?.(item);
+        this.readIndex++;
+        this.charCursor = 0;
+        this.advanceNonText();
+        break;
+
+      case 'tool_end':
+        this.cb.onToolEnd?.(item);
+        this.readIndex++;
+        this.charCursor = 0;
+        this.advanceNonText();
+        break;
     }
   }
 
@@ -669,6 +714,12 @@ export class StreamBuffer {
           return; // done — stop advancing
         case 'error':
           this.cb.onError(next.message);
+          break;
+        case 'tool_start':
+          this.cb.onToolStart?.(next);
+          break;
+        case 'tool_end':
+          this.cb.onToolEnd?.(next);
           break;
       }
       this.readIndex++;

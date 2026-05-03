@@ -3,7 +3,7 @@
 import { Bell, Search, Calendar } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { useAuth } from '@/components/auth/auth-provider';
+import { useAuth } from '@/features/auth/components/auth-provider';
 
 export function Header() {
   const { user } = useAuth();
@@ -42,6 +42,7 @@ export function Header() {
                 alt={user?.displayName || 'User'}
                 width={32}
                 height={32}
+                loading="eager"
                 referrerPolicy="no-referrer"
               />
             </div>

@@ -176,7 +176,7 @@ export default function NotificationsPage() {
 
   if (loading) {
     return (
-      <div className="h-[50vh] flex items-center justify-center text-gray-500">
+      <div className="h-[50vh] flex items-center justify-center text-muted-foreground">
         <Loader2 className="h-5 w-5 animate-spin mr-2" />
         正在加载通知...
       </div>
@@ -193,17 +193,17 @@ export default function NotificationsPage() {
         <div className="bg-amber-50 border border-amber-200 text-amber-700 px-4 py-3 text-sm">{warningText}</div>
       ) : null}
       <div className="flex items-center justify-between mb-8">
-        <h1 className="text-2xl font-bold text-gray-900 tracking-wide uppercase">通知中心</h1>
+        <h1 className="text-2xl font-bold text-foreground tracking-wide uppercase">通知中心</h1>
         <button
           type="button"
           onClick={markAllRead}
-          className="text-xs font-bold text-gray-500 hover:text-gray-900 uppercase tracking-wide transition-colors"
+          className="text-xs font-bold text-muted-foreground hover:text-foreground tracking-wide transition-colors"
         >
           全部标为已读
         </button>
       </div>
 
-      <div className="bg-white shadow-sm">
+      <div className="bg-card shadow-sm">
         <div className="divide-y divide-gray-100">
           {notifications.map((notification) => {
             const Icon =
@@ -224,36 +224,36 @@ export default function NotificationsPage() {
                   ? 'text-[#4A6FA5]'
                   : notification.type === 'success'
                     ? 'text-[#4CAF50]'
-                    : 'text-gray-600';
+                    : 'text-muted-foreground';
 
             const bg =
               notification.type === 'alert'
-                ? 'bg-[#E0573D]/10'
+                ? 'bg-primary/10'
                 : notification.type === 'message'
-                  ? 'bg-[#4A6FA5]/10'
+                  ? 'bg-blue-500/10'
                   : notification.type === 'success'
-                    ? 'bg-[#4CAF50]/10'
-                    : 'bg-gray-100';
+                    ? 'bg-emerald-500/10'
+                    : 'bg-muted';
 
             return (
               <div
                 key={notification.id}
-                className={`p-6 flex gap-4 hover:bg-[#F4F3F0] transition-colors ${notification.read ? 'opacity-70' : ''}`}
+                className={`p-6 flex gap-4 hover:bg-muted transition-colors ${notification.read ? 'opacity-70' : ''}`}
               >
                 <div className={`h-12 w-12 rounded-full flex items-center justify-center shrink-0 ${bg}`}>
                   <Icon className={`h-6 w-6 ${color}`} />
                 </div>
                 <div className="flex-1">
                   <div className="flex items-start justify-between mb-1">
-                    <h3 className={`text-sm font-bold text-gray-900 ${!notification.read ? 'flex items-center gap-2' : ''}`}>
+                    <h3 className={`text-sm font-bold text-foreground ${!notification.read ? 'flex items-center gap-2' : ''}`}>
                       {notification.title}
-                      {!notification.read ? <span className="h-2 w-2 rounded-full bg-[#E0573D]" /> : null}
+                      {!notification.read ? <span className="h-2 w-2 rounded-full bg-primary" /> : null}
                     </h3>
-                    <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">
+                    <span className="text-[10px] font-bold text-muted-foreground tracking-wide">
                       {notification.time}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-600">{notification.message}</p>
+                  <p className="text-sm text-muted-foreground">{notification.message}</p>
                 </div>
               </div>
             );

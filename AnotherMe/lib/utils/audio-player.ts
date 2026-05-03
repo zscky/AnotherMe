@@ -10,6 +10,7 @@ import { db } from '@/lib/utils/database';
 import { createLogger } from '@/lib/logger';
 
 const log = createLogger('AudioPlayer');
+const MAX_BLOB_URL_CACHE_SIZE = 24;
 
 /**
  * Audio player implementation
@@ -20,6 +21,56 @@ export class AudioPlayer {
   private muted: boolean = false;
   private volume: number = 1;
   private playbackRate: number = 1;
+  private blobUrlCache = new Map<string, string>();
+
+  private rememberBlobUrl(audioId: string, blobUrl: string): void {
+    if (this.blobUrlCache.has(audioId)) {
+      const existing = this.blobUrlCache.get(audioId);
+      if (existing && existing !== blobUrl) URL.revokeObjectURL(existing);
+      this.blobUrlCache.delete(audioId);
+    }
+
+    this.blobUrlCache.set(audioId, blobUrl);
+
+    while (this.blobUrlCache.size > MAX_BLOB_URL_CACHE_SIZE) {
+      const oldestKey = this.blobUrlCache.keys().next().value;
+      if (!oldestKey) break;
+      const oldestUrl = this.blobUrlCache.get(oldestKey);
+      if (oldestUrl) URL.revokeObjectURL(oldestUrl);
+      this.blobUrlCache.delete(oldestKey);
+    }
+  }
+
+  private async resolveIndexedDbBlobUrl(audioId: string): Promise<string | null> {
+    const cached = this.blobUrlCache.get(audioId);
+    if (cached) {
+      // Refresh insertion order for simple LRU behavior.
+      this.blobUrlCache.delete(audioId);
+      this.blobUrlCache.set(audioId, cached);
+      return cached;
+    }
+
+    const audioRecord = await db.audioFiles.get(audioId);
+    if (!audioRecord) return null;
+
+    const blobUrl = URL.createObjectURL(audioRecord.blob);
+    this.rememberBlobUrl(audioId, blobUrl);
+    return blobUrl;
+  }
+
+  /**
+   * Preload audio blob URL from IndexedDB into in-memory cache.
+   */
+  public async preload(audioId: string): Promise<boolean> {
+    if (!audioId) return false;
+    try {
+      const blobUrl = await this.resolveIndexedDbBlobUrl(audioId);
+      return Boolean(blobUrl);
+    } catch (error) {
+      log.warn('Audio preload failed:', error);
+      return false;
+    }
+  }
 
   /**
    * Play audio (from URL or IndexedDB pre-generated cache)
@@ -33,6 +84,7 @@ export class AudioPlayer {
       if (audioUrl) {
         this.stop();
         this.audio = new Audio();
+        this.audio.preload = 'auto';
         this.audio.src = audioUrl;
         if (this.muted) this.audio.volume = 0;
         else this.audio.volume = this.volume;
@@ -47,9 +99,8 @@ export class AudioPlayer {
       }
 
       // 2. Fall back to IndexedDB (client-generated TTS)
-      const audioRecord = await db.audioFiles.get(audioId);
-
-      if (!audioRecord) {
+      const blobUrl = await this.resolveIndexedDbBlobUrl(audioId);
+      if (!blobUrl) {
         // Pre-generated audio does not exist (generation failed), skip silently
         return false;
       }
@@ -59,9 +110,9 @@ export class AudioPlayer {
 
       // Create audio element
       this.audio = new Audio();
+      this.audio.preload = 'auto';
 
       // Set audio source
-      const blobUrl = URL.createObjectURL(audioRecord.blob);
       this.audio.src = blobUrl;
       if (this.muted) this.audio.volume = 0;
       else this.audio.volume = this.volume;
@@ -72,7 +123,6 @@ export class AudioPlayer {
 
       // Set ended callback
       this.audio.addEventListener('ended', () => {
-        URL.revokeObjectURL(blobUrl);
         this.onEndedCallback?.();
       });
 
@@ -194,6 +244,10 @@ export class AudioPlayer {
   public destroy(): void {
     this.stop();
     this.onEndedCallback = null;
+    for (const blobUrl of this.blobUrlCache.values()) {
+      URL.revokeObjectURL(blobUrl);
+    }
+    this.blobUrlCache.clear();
   }
 }
 

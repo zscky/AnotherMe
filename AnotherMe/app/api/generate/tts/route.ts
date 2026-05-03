@@ -61,12 +61,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const apiKey = clientBaseUrl
-      ? ttsApiKey || ''
-      : resolveTTSApiKey(ttsProviderId, ttsApiKey || undefined);
-    const baseUrl = clientBaseUrl
-      ? clientBaseUrl
-      : resolveTTSBaseUrl(ttsProviderId, ttsBaseUrl || undefined);
+    const apiKey = resolveTTSApiKey(ttsProviderId, ttsApiKey || undefined);
+    const baseUrl = resolveTTSBaseUrl(ttsProviderId, ttsBaseUrl || undefined);
 
     // Build TTS config
     const config = {

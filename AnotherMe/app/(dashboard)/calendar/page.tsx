@@ -137,21 +137,21 @@ export default function CalendarPage() {
     return (
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-bold text-gray-900 tracking-wide">
+          <h1 className="text-2xl font-bold text-foreground tracking-wide">
             {format(currentDate, 'yyyy年 M月', { locale: zhCN })}
           </h1>
-          <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">
+          <span className="text-xs font-bold text-muted-foreground tracking-wide">
             本月任务 {taskCountInMonth}
           </span>
-          <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-md p-1 shadow-sm">
-            <button onClick={prevMonth} className="p-1 hover:bg-gray-100 rounded transition-colors">
-              <ChevronLeft className="h-4 w-4 text-gray-600" />
+          <div className="flex items-center gap-1 bg-card border border-border rounded-md p-1 shadow-sm">
+            <button onClick={prevMonth} className="p-1 hover:bg-muted rounded transition-colors">
+              <ChevronLeft className="h-4 w-4 text-muted-foreground" />
             </button>
-            <button onClick={jumpToToday} className="px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 rounded transition-colors">
+            <button onClick={jumpToToday} className="px-3 py-1 text-xs font-medium text-foreground hover:bg-muted rounded transition-colors">
               今天
             </button>
-            <button onClick={nextMonth} className="p-1 hover:bg-gray-100 rounded transition-colors">
-              <ChevronRight className="h-4 w-4 text-gray-600" />
+            <button onClick={nextMonth} className="p-1 hover:bg-muted rounded transition-colors">
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
             </button>
           </div>
         </div>
@@ -166,12 +166,12 @@ export default function CalendarPage() {
 
     for (let i = 0; i < 7; i += 1) {
       days.push(
-        <div key={i} className="text-xs font-bold text-gray-500 uppercase tracking-wider text-center py-3 border-b border-gray-200">
+        <div key={i} className="text-xs font-bold text-muted-foreground tracking-wider text-center py-3 border-b border-border">
           {format(addDays(startDate, i), dateFormat, { locale: zhCN }).replace('星期', '周')}
         </div>,
       );
     }
-    return <div className="grid grid-cols-7 bg-[#F9F9F8] rounded-t-xl border border-gray-200 border-b-0">{days}</div>;
+    return <div className="grid grid-cols-7 bg-muted rounded-t-xl border border-border border-b-0">{days}</div>;
   };
 
   const renderCells = () => {
@@ -196,16 +196,16 @@ export default function CalendarPage() {
           <div
             key={day.toString()}
             className={cn(
-              'min-h-[120px] bg-white border-r border-b border-gray-200 p-2 transition-colors group relative',
-              !isCurrentMonth ? 'bg-gray-50/50 text-gray-400' : 'text-gray-900',
+              'min-h-[120px] bg-card border-r border-b border-border p-2 transition-colors group relative',
+              !isCurrentMonth ? 'bg-muted/50 text-muted-foreground' : 'text-foreground',
               isToday ? 'bg-blue-50/10' : '',
             )}
           >
             <div className="flex justify-between items-start mb-2">
-              <span className={cn('text-sm font-medium h-7 w-7 flex items-center justify-center rounded-full', isToday ? 'bg-[#E0573D] text-white shadow-sm' : '')}>
+              <span className={cn('text-sm font-medium h-7 w-7 flex items-center justify-center rounded-full', isToday ? 'bg-primary text-primary-foreground shadow-sm' : '')}>
                 {format(day, 'd')}
               </span>
-              <button onClick={() => setIsAddingTask(dateStr)} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-gray-900 transition-all">
+              <button onClick={() => setIsAddingTask(dateStr)} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-muted rounded text-muted-foreground hover:text-foreground transition-all">
                 <Plus className="h-4 w-4" />
               </button>
             </div>
@@ -262,12 +262,12 @@ export default function CalendarPage() {
       days = [];
     }
 
-    return <div className="border-l border-t border-gray-200 rounded-b-xl overflow-hidden">{rows}</div>;
+    return <div className="border-l border-t border-border rounded-b-xl overflow-hidden">{rows}</div>;
   };
 
   if (loading) {
     return (
-      <div className="h-[50vh] flex items-center justify-center text-gray-500">
+      <div className="h-[50vh] flex items-center justify-center text-muted-foreground">
         <Loader2 className="h-5 w-5 animate-spin mr-2" />
         正在加载日历...
       </div>
@@ -280,7 +280,7 @@ export default function CalendarPage() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
-      <div className="bg-white p-6 shadow-sm rounded-xl border border-gray-100">
+      <div className="bg-card p-6 shadow-sm rounded-xl border border-border">
         {renderHeader()}
         <div className="shadow-sm rounded-xl overflow-hidden">
           {renderDays()}

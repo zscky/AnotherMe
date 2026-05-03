@@ -132,7 +132,28 @@ function loadEnvSection(
 ): Record<string, ServerProviderEntry> {
   const result: Record<string, ServerProviderEntry> = {};
 
-  // First, add everything from YAML as defaults
+  // First, add env vars as fallback config.
+  for (const [prefix, providerId] of Object.entries(envMap)) {
+    const envApiKey = process.env[`${prefix}_API_KEY`] || undefined;
+    const envBaseUrl = process.env[`${prefix}_BASE_URL`] || undefined;
+    const envModelsStr = process.env[`${prefix}_MODELS`];
+    const envModels = envModelsStr
+      ? envModelsStr
+          .split(',')
+          .map((m) => m.trim())
+          .filter(Boolean)
+      : undefined;
+
+    if (requiresBaseUrl ? !envBaseUrl : !envApiKey) continue;
+    result[providerId] = {
+      apiKey: envApiKey || '',
+      baseUrl: envBaseUrl,
+      models: envModels,
+    };
+  }
+
+  // Then, apply server-providers.yml as the server-owned source of truth.
+  // YAML values override env fallback values when both are present.
   if (yamlSection) {
     for (const [id, entry] of Object.entries(yamlSection)) {
       const hasKey = !!entry?.apiKey;
@@ -146,34 +167,6 @@ function loadEnvSection(
         };
       }
     }
-  }
-
-  // Then, apply env vars (env takes priority over YAML)
-  for (const [prefix, providerId] of Object.entries(envMap)) {
-    const envApiKey = process.env[`${prefix}_API_KEY`] || undefined;
-    const envBaseUrl = process.env[`${prefix}_BASE_URL`] || undefined;
-    const envModelsStr = process.env[`${prefix}_MODELS`];
-    const envModels = envModelsStr
-      ? envModelsStr
-          .split(',')
-          .map((m) => m.trim())
-          .filter(Boolean)
-      : undefined;
-
-    if (result[providerId]) {
-      // YAML entry exists — env vars override individual fields
-      if (envApiKey) result[providerId].apiKey = envApiKey;
-      if (envBaseUrl) result[providerId].baseUrl = envBaseUrl;
-      if (envModels) result[providerId].models = envModels;
-      continue;
-    }
-
-    if (requiresBaseUrl ? !envBaseUrl : !envApiKey) continue;
-    result[providerId] = {
-      apiKey: envApiKey || '',
-      baseUrl: envBaseUrl,
-      models: envModels,
-    };
   }
 
   return result;
@@ -244,16 +237,14 @@ export function getServerProviders(): Record<string, { models?: string[]; baseUr
   return result;
 }
 
-/** Resolve API key: client key > server key > empty string */
+/** Resolve API key: server key > client key > empty string */
 export function resolveApiKey(providerId: string, clientKey?: string): string {
-  if (clientKey) return clientKey;
-  return getConfig().providers[providerId]?.apiKey || '';
+  return getConfig().providers[providerId]?.apiKey || clientKey || '';
 }
 
-/** Resolve base URL: client > server > undefined */
+/** Resolve base URL: server > client > undefined */
 export function resolveBaseUrl(providerId: string, clientBaseUrl?: string): string | undefined {
-  if (clientBaseUrl) return clientBaseUrl;
-  return getConfig().providers[providerId]?.baseUrl;
+  return getConfig().providers[providerId]?.baseUrl || clientBaseUrl;
 }
 
 /** Resolve proxy URL for a provider (server config only) */
@@ -276,13 +267,11 @@ export function getServerTTSProviders(): Record<string, { baseUrl?: string }> {
 }
 
 export function resolveTTSApiKey(providerId: string, clientKey?: string): string {
-  if (clientKey) return clientKey;
-  return getConfig().tts[providerId]?.apiKey || '';
+  return getConfig().tts[providerId]?.apiKey || clientKey || '';
 }
 
 export function resolveTTSBaseUrl(providerId: string, clientBaseUrl?: string): string | undefined {
-  if (clientBaseUrl) return clientBaseUrl;
-  return getConfig().tts[providerId]?.baseUrl;
+  return getConfig().tts[providerId]?.baseUrl || clientBaseUrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,13 +289,11 @@ export function getServerASRProviders(): Record<string, { baseUrl?: string }> {
 }
 
 export function resolveASRApiKey(providerId: string, clientKey?: string): string {
-  if (clientKey) return clientKey;
-  return getConfig().asr[providerId]?.apiKey || '';
+  return getConfig().asr[providerId]?.apiKey || clientKey || '';
 }
 
 export function resolveASRBaseUrl(providerId: string, clientBaseUrl?: string): string | undefined {
-  if (clientBaseUrl) return clientBaseUrl;
-  return getConfig().asr[providerId]?.baseUrl;
+  return getConfig().asr[providerId]?.baseUrl || clientBaseUrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -324,13 +311,11 @@ export function getServerPDFProviders(): Record<string, { baseUrl?: string }> {
 }
 
 export function resolvePDFApiKey(providerId: string, clientKey?: string): string {
-  if (clientKey) return clientKey;
-  return getConfig().pdf[providerId]?.apiKey || '';
+  return getConfig().pdf[providerId]?.apiKey || clientKey || '';
 }
 
 export function resolvePDFBaseUrl(providerId: string, clientBaseUrl?: string): string | undefined {
-  if (clientBaseUrl) return clientBaseUrl;
-  return getConfig().pdf[providerId]?.baseUrl;
+  return getConfig().pdf[providerId]?.baseUrl || clientBaseUrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,16 +332,14 @@ export function getServerImageProviders(): Record<string, Record<string, never>>
 }
 
 export function resolveImageApiKey(providerId: string, clientKey?: string): string {
-  if (clientKey) return clientKey;
-  return getConfig().image[providerId]?.apiKey || '';
+  return getConfig().image[providerId]?.apiKey || clientKey || '';
 }
 
 export function resolveImageBaseUrl(
   providerId: string,
   clientBaseUrl?: string,
 ): string | undefined {
-  if (clientBaseUrl) return clientBaseUrl;
-  return getConfig().image[providerId]?.baseUrl;
+  return getConfig().image[providerId]?.baseUrl || clientBaseUrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -373,16 +356,14 @@ export function getServerVideoProviders(): Record<string, Record<string, never>>
 }
 
 export function resolveVideoApiKey(providerId: string, clientKey?: string): string {
-  if (clientKey) return clientKey;
-  return getConfig().video[providerId]?.apiKey || '';
+  return getConfig().video[providerId]?.apiKey || clientKey || '';
 }
 
 export function resolveVideoBaseUrl(
   providerId: string,
   clientBaseUrl?: string,
 ): string | undefined {
-  if (clientBaseUrl) return clientBaseUrl;
-  return getConfig().video[providerId]?.baseUrl;
+  return getConfig().video[providerId]?.baseUrl || clientBaseUrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -400,10 +381,14 @@ export function getServerWebSearchProviders(): Record<string, { baseUrl?: string
   return result;
 }
 
-/** Resolve Tavily API key: client key > server key > TAVILY_API_KEY env > empty */
+/** Resolve Tavily API key: server key > client key > TAVILY_API_KEY env > empty */
 export function resolveWebSearchApiKey(clientKey?: string): string {
-  if (clientKey) return clientKey;
   const serverKey = getConfig().webSearch.tavily?.apiKey;
   if (serverKey) return serverKey;
-  return process.env.TAVILY_API_KEY || '';
+  return clientKey || process.env.TAVILY_API_KEY || '';
+}
+
+/** Resolve Tavily base URL: server > client > undefined */
+export function resolveWebSearchBaseUrl(clientBaseUrl?: string): string | undefined {
+  return getConfig().webSearch.tavily?.baseUrl || clientBaseUrl;
 }

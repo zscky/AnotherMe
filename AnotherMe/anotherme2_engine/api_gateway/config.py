@@ -47,16 +47,23 @@ class Settings:
     running_job_recover_batch: int = int(os.getenv("GATEWAY_RUNNING_JOB_RECOVER_BATCH", "8"))
     running_job_result_reconcile_batch: int = int(os.getenv("GATEWAY_RUNNING_JOB_RESULT_RECONCILE_BATCH", "12"))
     missing_input_cleanup_batch: int = int(os.getenv("GATEWAY_MISSING_INPUT_CLEANUP_BATCH", "12"))
-    purge_prestart_jobs_on_startup: bool = _bool_env("GATEWAY_PURGE_PRESTART_JOBS_ON_STARTUP", True)
+    purge_prestart_jobs_on_startup: bool = _bool_env("GATEWAY_PURGE_PRESTART_JOBS_ON_STARTUP", False)
     purge_prestart_jobs_batch: int = int(os.getenv("GATEWAY_PURGE_PRESTART_JOBS_BATCH", "5000"))
     purge_prestart_queue_messages_on_startup: bool = _bool_env(
         "GATEWAY_PURGE_PRESTART_QUEUE_MESSAGES_ON_STARTUP",
-        True,
+        False,
     )
+    # Safety latch for destructive startup purge behavior.
+    # Even if purge flags are enabled, startup purge is skipped unless this is truthy.
+    startup_purge_armed: bool = _bool_env("GATEWAY_STARTUP_PURGE_ARMED", False)
 
     anotherme_base_url: str = os.getenv("ANOTHERME_BASE_URL", "http://localhost:3000")
     anotherme_poll_seconds: int = int(os.getenv("ANOTHERME_POLL_SECONDS", "5"))
     anotherme_timeout_seconds: int = int(os.getenv("ANOTHERME_TIMEOUT_SECONDS", "1200"))
+    course_generation_provider: Literal["legacy", "msm_v1"] = os.getenv(
+        "GATEWAY_COURSE_GENERATION_PROVIDER",
+        "legacy",
+    )  # type: ignore[assignment]
 
     object_storage_driver: str = os.getenv("OBJECT_STORAGE_DRIVER", "local")
     object_storage_bucket: str = os.getenv("OBJECT_STORAGE_BUCKET", "anotherme2-artifacts")
@@ -94,6 +101,10 @@ class Settings:
                 self.queue_learning_record,
             ]
         }
+
+    @property
+    def startup_purge_enabled(self) -> bool:
+        return bool(self.purge_prestart_jobs_on_startup and self.startup_purge_armed)
 
 
 _SETTINGS: Settings | None = None

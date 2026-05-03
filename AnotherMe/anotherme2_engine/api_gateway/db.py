@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import socket
 import time
+from datetime import datetime
 from typing import Iterator
 
 from sqlalchemy import create_engine, event
@@ -73,8 +74,18 @@ def _env_flag(name: str, default: bool) -> bool:
 def _should_auto_fallback(database_url: str) -> bool:
     if database_url.startswith("sqlite"):
         return False
-    # Default to disabled to avoid split-brain writes across multiple instances.
-    return _env_flag("GATEWAY_DB_AUTO_FALLBACK", False)
+    raw = os.getenv("GATEWAY_DB_AUTO_FALLBACK")
+    if raw is not None:
+        return _env_flag("GATEWAY_DB_AUTO_FALLBACK", False)
+
+    # In local/dev/test workflows, prefer resiliency so gateway/worker can boot
+    # without requiring a running PostgreSQL instance.
+    env_name = os.getenv("GATEWAY_ENV", "dev").strip().lower()
+    if env_name in {"dev", "development", "local", "test", "testing"}:
+        return True
+
+    # Production-like envs stay disabled by default to avoid split-brain writes.
+    return False
 
 
 def _fallback_sqlite_url() -> str:
@@ -147,6 +158,67 @@ def init_db() -> None:
         active_engine = engine
         active_url = str(active_engine.url)
 
+        def _sqlite_column_exists(conn, table: str, column: str) -> bool:
+            rows = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+            return any(str(row[1]).lower() == column.lower() for row in rows)
+
+        def _postgres_column_exists(conn, table: str, column: str) -> bool:
+            row = conn.exec_driver_sql(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = :table_name
+                  AND column_name = :column_name
+                LIMIT 1
+                """,
+                {"table_name": table, "column_name": column},
+            ).first()
+            return row is not None
+
+        def _ensure_schema_columns(conn, url: str) -> None:
+            if url.startswith("postgresql"):
+                conn.exec_driver_sql(
+                    "ALTER TABLE job_events ADD COLUMN IF NOT EXISTS trace_event_id VARCHAR(36)"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE job_events ADD COLUMN IF NOT EXISTS trace_event_type VARCHAR(64)"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITHOUT TIME ZONE"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP WITHOUT TIME ZONE"
+                )
+                conn.exec_driver_sql(
+                    "UPDATE jobs SET updated_at = COALESCE(updated_at, created_at, NOW()) WHERE updated_at IS NULL"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE jobs ALTER COLUMN updated_at SET NOT NULL"
+                )
+                return
+
+            if url.startswith("sqlite"):
+                if not _sqlite_column_exists(conn, "job_events", "trace_event_id"):
+                    conn.exec_driver_sql("ALTER TABLE job_events ADD COLUMN trace_event_id TEXT")
+                if not _sqlite_column_exists(conn, "job_events", "trace_event_type"):
+                    conn.exec_driver_sql("ALTER TABLE job_events ADD COLUMN trace_event_type TEXT")
+                if not _sqlite_column_exists(conn, "jobs", "updated_at"):
+                    conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN updated_at TEXT")
+                if not _sqlite_column_exists(conn, "jobs", "started_at"):
+                    conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN started_at TEXT")
+                if not _sqlite_column_exists(conn, "jobs", "completed_at"):
+                    conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN completed_at TEXT")
+                now_iso = datetime.utcnow().isoformat()
+                conn.exec_driver_sql(
+                    "UPDATE jobs SET updated_at = COALESCE(updated_at, created_at, :now_iso) WHERE updated_at IS NULL",
+                    {"now_iso": now_iso},
+                )
+                return
+
         # Gateway and worker may boot together; serialize schema init on PostgreSQL.
         if active_url.startswith("postgresql"):
             lock_sql = "SELECT pg_advisory_lock(hashtext('anotherme2_schema_init'))"
@@ -155,11 +227,14 @@ def init_db() -> None:
                 conn.exec_driver_sql(lock_sql)
                 try:
                     Base.metadata.create_all(bind=conn)
+                    _ensure_schema_columns(conn, active_url)
                 finally:
                     conn.exec_driver_sql(unlock_sql)
             return
 
-        Base.metadata.create_all(bind=active_engine)
+        with active_engine.begin() as conn:
+            Base.metadata.create_all(bind=conn)
+            _ensure_schema_columns(conn, active_url)
 
     if _should_auto_fallback(current_url) and not _postgres_tcp_reachable(current_url):
         fallback_url = _fallback_sqlite_url()

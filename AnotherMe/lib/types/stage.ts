@@ -3,7 +3,7 @@ import type { Slide } from '@/lib/types/slides';
 import type { Action } from '@/lib/types/action';
 import type { PBLProjectConfig } from '@/lib/pbl/types';
 
-export type SceneType = 'slide' | 'quiz' | 'interactive' | 'pbl';
+export type SceneType = 'slide' | 'quiz' | 'interactive' | 'pbl' | 'live_book_page';
 
 export type StageMode = 'autonomous' | 'playback';
 
@@ -76,7 +76,12 @@ export interface Scene {
 /**
  * Scene content based on type
  */
-export type SceneContent = SlideContent | QuizContent | InteractiveContent | PBLContent;
+export type SceneContent =
+  | SlideContent
+  | QuizContent
+  | InteractiveContent
+  | PBLContent
+  | LiveBookPageContent;
 
 /**
  * Slide content - PPTist Canvas data
@@ -128,6 +133,46 @@ export interface InteractiveContent {
 export interface PBLContent {
   type: 'pbl';
   projectConfig: PBLProjectConfig;
+}
+
+export interface LiveBookBlockContent {
+  id: string;
+  type:
+    | 'section'
+    | 'text'
+    | 'quiz'
+    | 'interactive'
+    | 'animation'
+    | 'deep_dive'
+    | 'remedial'
+    | 'callout'
+    | 'figure'
+    | 'flash_cards'
+    | 'code'
+    | 'timeline'
+    | 'concept_graph'
+    | 'user_note'
+    | 'placeholder';
+  title: string;
+  content: string;
+  status: 'ready' | 'error';
+  paramsJson?: Record<string, unknown>;
+  metadataJson?: Record<string, unknown>;
+  error?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  sourceRefsJson?: Array<Record<string, unknown>>;
+}
+
+export interface LiveBookPageContent {
+  type: 'live_book_page';
+  bookId: string;
+  pageId: string;
+  chapterId?: string;
+  chapterTitle?: string;
+  pageTitle: string;
+  order?: number;
+  blocks: LiveBookBlockContent[];
 }
 
 // Re-export generation types for convenience
